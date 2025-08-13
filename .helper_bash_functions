@@ -1,0 +1,40 @@
+#!/bin/bash
+set -e
+Red='\033[0;31m'          # Red
+Green='\033[0;32m'        # Green
+Yellow='\033[0;33m'       # Yellow
+Color_Off='\033[0m'       # Text Reset
+
+CATKIN_WS_PATH="/cortex/.catkin_ws"
+
+
+# ROS helpers
+colcon_build() { START_DIR=$(pwd) && cd ${CATKIN_WS_PATH} && source /opt/ros/noetic/setup.bash && colcon build --cmake-args  -DSETUPTOOLS_DEB_LAYOUT=OFF && source ${CATKIN_WS_PATH}/install/setup.bash; cd ${START_DIR}; }
+rosdep_install() { rosdep install --from-paths src --ignore-src -r -y ; }
+
+# Git helpers
+git config --global alias.sshify '!f() { git remote set-url origin $(git remote get-url origin | sed -En "s/https:\/\/github.com\//git@github.com:/p") ; }; f'
+git config --global alias.unsshify '!f() { git remote set-url origin $(git remote get-url origin | sed -En "s/git@github.com:/https:\/\/github.com\//p") ; }; f'
+git_add_ssh() { eval "$(ssh-agent -s)"; ssh-add ~/.ssh/id_rsa ; }
+git_print_log() { git log --graph --oneline --decorate --all ; }
+
+# General bash helpers
+grep_all() { grep -rn '.' -e "$1"; }
+cd_ltr(){ cd $1$(ls $1 -ltr -d */ | tail -n 1 | awk '{print $9}'); }
+cats() { for input_file in $@; do echo -e "${input_file}: \n"; highlight -O ansi --force $input_file; echo -e "\n"; done; }
+catsn() { for input_file in $@; do echo -e "${input_file}: \n"; highlight -O ansi --force -n $input_file; echo -e "\n"; done; }
+ps_aux() { ps aux | cgrep $1 | grep -v grep ; }
+kill_any_process() { ps_aux_command $1; conf="$(confirm "kill these processes? [Y/n]")"; if [[ $conf == "y" ]]; then echo "killing..."; sudo kill -9 $(ps_aux $1 | awk {'print $2}'); sleep 1; echo "remaining: "; ps_aux_command $1 else echo "not killing"; fi ; }
+docker_exec () { if [[ $(docker container ls -q | wc -l) -eq 1 ]]; then docker exec -it $(docker container ls -q) bash; else echo "wrong number of containers running"; fi; }
+
+
+# python linters
+print_reinstall_warning() { echo -e "${Red}INFO: Just installed $1. Please re-run the last command to get the output and formatting that you're expecting.${Color_Off}"; }
+check_pylintrc() { if ! [ -f /tmp/pylintrc ]; then wget -O /tmp/pylintrc https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/pylintrc; fi; }
+check_apt_package() { if [[ $(dpkg -l | grep -w $1 | wc -l) -eq 0 ]]; then sudo apt update && sudo apt install -y $1; echo "installed"; fi; }
+er_flake8_here() { check_pylintrc; NEWLY_INSTALLED=$(check_apt_package "flake8"); flake8 --config /tmp/pylintrc --max-line-length 120; if [[ ${NEWLY_INSTALLED} == *"installed"* ]]; then print_reinstall_warning "flake8"; fi; }
+er_pylint_here() { check_pylintrc; NEWLY_INSTALLED=$(check_apt_package "pylint");  pylint --rcfile /tmp/pylintrc --max-line-length 120 *; if [[ ${NEWLY_INSTALLED} == *"installed"* ]]; then print_reinstall_warning "pylint"; fi; }
+er_pylint_sorted_here() { er_pylint_here | sort -V | grep -v "\*\*\*\*\*\*\*\*"; }
+er_pylint_single_file() { check_pylintrc; check_apt_package "pylint";  pylint --rcfile /tmp/pylintrc --max-line-length 120 $1; }
+er_pylint_single_file_sorted() { er_pylint_single_file $1 | sort -V | grep -v "\*\*\*\*\*\*\*\*"; }
+er_python_linters_here() { echo; er_pylint_sorted_here; echo; er_flake8_here; }
