@@ -60,3 +60,6 @@ if not project_names:
 
 for name in project_names:
     print(f"{name}")
+
+
+## EXAMPLE USAGE: python3.8 <(curl -Ls https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/find_cmake_project_names.py) /PATH/TO/SEARCH
