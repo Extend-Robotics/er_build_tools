@@ -58,8 +58,10 @@ if not project_names:
     print("No project names found in CMakeLists.txt files.")
     exit(1)
 
-for name in project_names:
+for name in project_names[:-1]:
     print(f"{name}", end=' ')
+print(f"{project_names[-1]}", end='')
+
 
 
 ## EXAMPLE USAGE: python3.8 <(curl -Ls https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/find_cmake_project_names.py) /PATH/TO/SEARCH
