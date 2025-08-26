@@ -11,6 +11,7 @@ CATKIN_WS_PATH="/cortex/.catkin_ws"
 # ROS helpers
 colcon_build() { START_DIR=$(pwd) && cd ${CATKIN_WS_PATH} && source /opt/ros/noetic/setup.bash && colcon build --cmake-args  -DSETUPTOOLS_DEB_LAYOUT=OFF && source ${CATKIN_WS_PATH}/install/setup.bash; cd ${START_DIR}; }
 rosdep_install() { rosdep install --from-paths src --ignore-src -r -y ; }
+colcon_test_this_package() { THIS_DIR=$(pwd); roscd; cd ../../; colcon build --cmake-args  -DSETUPTOOLS_DEB_LAYOUT=OFF --packages-up-to $1; source install/setup.bash && colcon test --packages-up-to $1; colcon test-result --verbose; cd $THIS_DIR; }
 
 # Git helpers
 git config --global alias.sshify '!f() { git remote set-url origin $(git remote get-url origin | sed -En "s/https:\/\/github.com\//git@github.com:/p") ; }; f'
