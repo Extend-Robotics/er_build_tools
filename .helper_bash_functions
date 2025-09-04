@@ -8,9 +8,28 @@ CATKIN_WS_PATH="/cortex/.catkin_ws"
 
 
 # ROS helpers
-colcon_build() { START_DIR=$(pwd) && cd ${CATKIN_WS_PATH} && source /opt/ros/noetic/setup.bash && colcon build --cmake-args  -DSETUPTOOLS_DEB_LAYOUT=OFF && source ${CATKIN_WS_PATH}/install/setup.bash; cd ${START_DIR}; }
+colcon_build() { START_DIR=$(pwd) && \
+                 COLCON_BUILD_COMMAND="colcon build --cmake-args  -DSETUPTOOLS_DEB_LAYOUT=OFF" && \
+                 if [ ! -z "$1" ];
+                   then COLCON_BUILD_COMMAND="${COLCON_BUILD_COMMAND} --packages-up-to $1"
+                 fi && \
+                 cd ${CATKIN_WS_PATH} && \
+                 source /opt/ros/noetic/setup.bash && \
+                 echo -e "${Yellow}Running build command:\n${Green}${COLCON_BUILD_COMMAND}${Color_Off}" && \
+                 ${COLCON_BUILD_COMMAND}; \
+                 source ${CATKIN_WS_PATH}/install/setup.bash; \
+                 cd ${START_DIR}
+}
 rosdep_install() { rosdep install --from-paths src --ignore-src -r -y ; }
-colcon_test_this_package() { THIS_DIR=$(pwd); roscd; cd ../../; colcon build --cmake-args  -DSETUPTOOLS_DEB_LAYOUT=OFF --packages-up-to $1; source install/setup.bash && colcon test --packages-up-to $1; colcon test-result --verbose; cd $THIS_DIR; }
+colcon_test_this_package() { THIS_DIR=$(pwd)
+                             cd ${CATKIN_WS_PATH}
+                             colcon_build $1
+                             source install/setup.bash && \
+                             colcon test --packages-up-to $1
+                             colcon test-result --verbose
+                             cd $THIS_DIR
+
+}
 find_cmake_project_names_from_dir() { if [[ -z $1 ]]; then DIR_TO_SEARCH="."; else DIR_TO_SEARCH=$1; fi; wget -qO- https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/find_cmake_project_names.py | python3 - $DIR_TO_SEARCH; }
 
 
