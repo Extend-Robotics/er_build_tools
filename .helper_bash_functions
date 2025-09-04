@@ -4,6 +4,7 @@ Green='\033[0;32m'        # Green
 Yellow='\033[0;33m'       # Yellow
 Color_Off='\033[0m'       # Text Reset
 
+
 CATKIN_WS_PATH="/cortex/.catkin_ws"
 
 
@@ -82,6 +83,23 @@ git_print_log() { git log --graph --oneline --decorate --all ; }
 
 
 # General bash helpers
+function confirm() {
+	# call with a prompt string or use a default
+	read -r -p "${1:-[y/N]} " response
+	case "$response" in
+		[yY][eE][sS]|[yY])
+			echo "y"
+			return 1
+			;;
+		*)
+			echo "n"
+			return 0
+			;;
+	esac
+}
+alias cgrep="grep --color=always"
+ps_aux() { ps aux | cgrep $1 | grep -v grep ; }
+ps_aux_command() { ps -e -o command | cgrep $1 | grep -v grep ; }
 grep_all() { grep -rn '.' -e "$1"; }
 cd_ltr(){ cd $1$(ls $1 -ltr -d */ | tail -n 1 | awk '{print $9}'); }
 cats() { for input_file in $@; do echo -e "${input_file}: \n"; highlight -O ansi --force $input_file; echo -e "\n"; done; }
