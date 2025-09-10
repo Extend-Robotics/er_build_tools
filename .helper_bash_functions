@@ -6,7 +6,8 @@ Color_Off='\033[0m'       # Text Reset
 
 
 CATKIN_WS_PATH="/cortex/.catkin_ws"
-
+THIS_SCRIPT_BRANCH="main"
+THIS_SCRIPT_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/.helper_bash_functions"
 
 # ROS helpers
 colcon_build() { START_DIR=$(pwd) && \
@@ -107,7 +108,7 @@ catsn() { for input_file in $@; do echo -e "${input_file}: \n"; highlight -O ans
 ps_aux() { ps aux | cgrep $1 | grep -v grep ; }
 kill_any_process() { ps_aux_command $1; conf="$(confirm "kill these processes? [Y/n]")"; if [[ $conf == "y" ]]; then echo "killing..."; sudo kill -9 $(ps_aux $1 | awk {'print $2}'); sleep 1; echo "remaining: "; ps_aux_command $1 else echo "not killing"; fi ; }
 docker_exec () { if [[ $(docker container ls -q | wc -l) -eq 1 ]]; then docker exec -it $(docker container ls -q) bash; else echo "wrong number of containers running"; fi; }
-
+update_helper_bash_functions() { if [ ! -f ~/.helper_bash_functions ]; then wget -O ~/.helper_bash_functions https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/.helper_bash_functions
 
 # python linters
 print_reinstall_warning() { echo -e "${Red}INFO: Just installed $1. Please re-run the last command to get the output and formatting that you're expecting.${Color_Off}"; }
@@ -119,3 +120,9 @@ er_pylint_sorted_here() { er_pylint_here | sort -V | grep -v "\*\*\*\*\*\*\*\*";
 er_pylint_single_file() { check_pylintrc; check_apt_package "pylint";  pylint --rcfile /tmp/pylintrc --max-line-length 120 $1; }
 er_pylint_single_file_sorted() { er_pylint_single_file $1 | sort -V | grep -v "\*\*\*\*\*\*\*\*"; }
 er_python_linters_here() { echo; er_pylint_sorted_here; echo; er_flake8_here; }
+update_helper_bash_functions() { if [ ! -f ~/.helper_bash_functions ]; then
+                                   echo -e "${Red}ERROR: Tried to replace this file but couldn't find it, something has gone wrong!${Color_Off}\n"
+                                   return
+                                 fi
+                                 wget -O ~/.helper_bash_functions ${THIS_SCRIPT_URL}
+}
