@@ -1,0 +1,14 @@
+name: Check bash
+
+on: [push]
+
+jobs:
+  check-bash:
+    runs-on: ubuntu-latest
+    - name: Debug this
+      run: ls -ltra
+
+    - name: Check bash
+      run: |
+        bash -c "source .helper_bash_functions"
+
