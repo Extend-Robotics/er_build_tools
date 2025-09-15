@@ -20,7 +20,6 @@ jobs:
 
       - name: Check bash
         run: |
-          echo $bash_file && bash -c "source ${bash_file}"
-        with:
-          bash_file: ${{ steps.version.outputs.BASH_FILES }}
+          for bash_file in $( ${{ steps.version.outputs.BASH_FILES }} ); do echo $bash_file && bash -c "source ${bash_file}"; done
+
 
