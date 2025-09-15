@@ -1,0 +1,17 @@
+name: Check bash
+
+on: [push]
+
+
+jobs:
+  check_bash:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+
+      - name: Find and check all bash files
+        run: |
+          for bash_file in $( grep -rn '.' -e "\#\!/bin/bash" | sed -r 's/:.*//g' ); do echo "Found file containing bash shebang: ${bash_file}. Checking..." && bash -c "source ${bash_file}"; done
+
+
