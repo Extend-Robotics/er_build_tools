@@ -3,7 +3,7 @@ name: Check bash
 on: [push]
 
 jobs:
-  check-bash:
+  check_bash:
     runs-on: ubuntu-latest
     - name: Debug this
       run: ls -ltra
