@@ -18,9 +18,10 @@ colcon_build() { START_DIR=$(pwd) && \
                  cd ${CATKIN_WS_PATH} && \
                  source /opt/ros/noetic/setup.bash && \
                  echo -e "${Yellow}Running build command:\n${Green}${COLCON_BUILD_COMMAND}${Color_Off}" && \
-                 ${COLCON_BUILD_COMMAND}; \
+                 ${COLCON_BUILD_COMMAND}; RET_VAL=$?;\
                  source ${CATKIN_WS_PATH}/install/setup.bash; \
-                 cd ${START_DIR}
+                 cd ${START_DIR}; \
+                 return ${RET_VAL}
 }
 rosdep_install() { rosdep install --from-paths src --ignore-src -r -y ; }
 colcon_test_this_package() { THIS_DIR=$(pwd)
