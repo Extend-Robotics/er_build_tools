@@ -13,7 +13,14 @@ jobs:
       - name: Debug this
         run: ls -ltra && pwd
 
+      - name: Find all bash files by searching for shebang
+        run: |
+          echo BASH_FILES=$(grep -rn '.' -e "\#\!/bin/bash" | sed -r 's/:.*//g') >> $GITHUB_OUTPUT
+        id: find_bash_files
+
       - name: Check bash
         run: |
-          bash -c "source .helper_bash_functions"
+          echo $bash_file && bash -c "source ${bash_file}"
+        with:
+          bash_file: ${{ steps.version.outputs.BASH_FILES }}
 
