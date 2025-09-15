@@ -20,6 +20,6 @@ jobs:
 
       - name: Check bash
         run: |
-          for bash_file in $( ${{ steps.find_bash_files.outputs.BASH_FILES }} ); do echo $bash_file && bash -c "source ${bash_file}"; done
+          for bash_file in $( grep -rn '.' -e "\#\!/bin/bash" | sed -r 's/:.*//g' ); do echo $bash_file && bash -c "source ${bash_file}"; done
 
 
