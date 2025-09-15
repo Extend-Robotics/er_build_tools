@@ -108,7 +108,7 @@ catsn() { for input_file in $@; do echo -e "${input_file}: \n"; highlight -O ans
 ps_aux() { ps aux | cgrep $1 | grep -v grep ; }
 kill_any_process() { ps_aux_command $1; conf="$(confirm "kill these processes? [Y/n]")"; if [[ $conf == "y" ]]; then echo "killing..."; sudo kill -9 $(ps_aux $1 | awk {'print $2}'); sleep 1; echo "remaining: "; ps_aux_command $1 else echo "not killing"; fi ; }
 docker_exec () { if [[ $(docker container ls -q | wc -l) -eq 1 ]]; then docker exec -it $(docker container ls -q) bash; else echo "wrong number of containers running"; fi; }
-update_helper_bash_functions() { if [ ! -f ~/.helper_bash_functions ]; then wget -O ~/.helper_bash_functions https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/.helper_bash_functions
+#update_helper_bash_functions() { if [ ! -f ~/.helper_bash_functions ]; then wget -O ~/.helper_bash_functions https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/.helper_bash_functions
 
 # python linters
 print_reinstall_warning() { echo -e "${Red}INFO: Just installed $1. Please re-run the last command to get the output and formatting that you're expecting.${Color_Off}"; }
