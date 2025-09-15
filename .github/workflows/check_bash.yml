@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Debug this
-        run: ls -ltra
+        run: ls -ltra && pwd
 
       - name: Check bash
         run: |
