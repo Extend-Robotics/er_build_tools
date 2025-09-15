@@ -1,0 +1,128 @@
+#!/bin/bash
+Red='\033[0;31m'          # Red
+Green='\033[0;32m'        # Green
+Yellow='\033[0;33m'       # Yellow
+Color_Off='\033[0m'       # Text Reset
+
+
+CATKIN_WS_PATH="/cortex/.catkin_ws"
+THIS_SCRIPT_BRANCH="main"
+THIS_SCRIPT_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/.helper_bash_functions"
+
+# ROS helpers
+colcon_build() { START_DIR=$(pwd) && \
+                 COLCON_BUILD_COMMAND="colcon build --cmake-args  -DSETUPTOOLS_DEB_LAYOUT=OFF" && \
+                 if [ ! -z "$1" ];
+                   then COLCON_BUILD_COMMAND="${COLCON_BUILD_COMMAND} --packages-up-to $1"
+                 fi && \
+                 cd ${CATKIN_WS_PATH} && \
+                 source /opt/ros/noetic/setup.bash && \
+                 echo -e "${Yellow}Running build command:\n${Green}${COLCON_BUILD_COMMAND}${Color_Off}" && \
+                 ${COLCON_BUILD_COMMAND}; \
+                 source ${CATKIN_WS_PATH}/install/setup.bash; \
+                 cd ${START_DIR}
+}
+rosdep_install() { rosdep install --from-paths src --ignore-src -r -y ; }
+colcon_test_this_package() { THIS_DIR=$(pwd)
+                             cd ${CATKIN_WS_PATH}
+                             colcon_build $1
+                             source install/setup.bash && \
+                             colcon test --packages-up-to $1
+                             colcon test-result --verbose
+                             cd $THIS_DIR
+
+}
+find_cmake_project_names_from_dir() { if [[ -z $1 ]]; then DIR_TO_SEARCH="."; else DIR_TO_SEARCH=$1; fi; wget -qO- https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/find_cmake_project_names.py | python3 - $DIR_TO_SEARCH; }
+
+if [ -f /.dockerenv ]; then
+  # Git autocomplete
+  source /etc/bash_completion.d/git-prompt
+  source /usr/share/bash-completion/completions/git
+  
+  # Git pretty terminal
+  function be_get_branch {
+    local dir="$PWD"
+    local vcs
+    local nick
+    while [[ "$dir" != "/" ]]; do
+      for vcs in git hg svn bzr; do
+        if [[ -d "$dir/.$vcs" ]] && hash "$vcs" &>/dev/null; then
+          case "$vcs" in
+            git) __git_ps1 "${1:-(%s) }"; return;;
+            hg) nick=$(hg branch 2>/dev/null);;
+            svn) nick=$(svn info 2>/dev/null\
+                  | grep -e '^Repository Root:'\
+                  | sed -e 's#.*/##');;
+            bzr)
+              local conf="${dir}/.bzr/branch/branch.conf" # normal branch
+              [[ -f "$conf" ]] && nick=$(grep -E '^nickname =' "$conf" | cut -d' ' -f 3)
+              conf="${dir}/.bzr/branch/location" # colo/lightweight branch
+              [[ -z "$nick" ]] && [[ -f "$conf" ]] && nick="$(basename "$(< $conf)")"
+              [[ -z "$nick" ]] && nick="$(basename "$(readlink -f "$dir")")";;
+          esac
+          [[ -n "$nick" ]] && printf "${1:-(%s) }" "$nick"
+          return 0
+        fi
+      done
+      dir="$(dirname "$dir")"
+    done
+  }
+  
+  # Add branch to PS1 (based on $PS1 or $1), formatted as $2
+  export GIT_PS1_SHOWDIRTYSTATE=yes
+  
+  #pretty PS1:
+  export PS1="\$([[ \$? != 0 ]] && echo \"[\[\033[0;31m\]\342\234\227\[\033[0;37m\]]\342\224\200\")[$(if [[ ${EUID} == 0 ]]; then echo '\[\033[0;31m\]\h'; else echo '\[\033[0;33m\]\u\[\033[0;37m\]@\[\033[0;95m\]\h'; fi)\[\033[0;37m\]]\342\224\200[\[\033[0;32m\]\w\[\033[0;37m\]]\n\[\033[0;37m\]\342\224\224\342\224\200\342\224\200\342\225\274 \[\033[0m\]"
+  export PS1="\[\033[0;37m\]\342\224\214\342\224\200\$(be_get_branch "$2")${PS1}";
+fi
+
+# Git helpers
+git config --global alias.sshify '!f() { git remote set-url origin $(git remote get-url origin | sed -En "s/https:\/\/github.com\//git@github.com:/p") ; }; f'
+git config --global alias.unsshify '!f() { git remote set-url origin $(git remote get-url origin | sed -En "s/git@github.com:/https:\/\/github.com\//p") ; }; f'
+git_add_ssh() { eval "$(ssh-agent -s)"; ssh-add ~/.ssh/id_rsa ; }
+git_print_log() { git log --graph --oneline --decorate --all ; }
+
+
+# General bash helpers
+function confirm() {
+	# call with a prompt string or use a default
+	read -r -p "${1:-[y/N]} " response
+	case "$response" in
+		[yY][eE][sS]|[yY])
+			echo "y"
+			return 1
+			;;
+		*)
+			echo "n"
+			return 0
+			;;
+	esac
+}
+alias cgrep="grep --color=always"
+ps_aux() { ps aux | cgrep $1 | grep -v grep ; }
+ps_aux_command() { ps -e -o command | cgrep $1 | grep -v grep ; }
+grep_all() { grep -rn '.' -e "$1"; }
+cd_ltr(){ cd $1$(ls $1 -ltr -d */ | tail -n 1 | awk '{print $9}'); }
+cats() { for input_file in $@; do echo -e "${input_file}: \n"; highlight -O ansi --force $input_file; echo -e "\n"; done; }
+catsn() { for input_file in $@; do echo -e "${input_file}: \n"; highlight -O ansi --force -n $input_file; echo -e "\n"; done; }
+ps_aux() { ps aux | cgrep $1 | grep -v grep ; }
+kill_any_process() { ps_aux_command $1; conf="$(confirm "kill these processes? [Y/n]")"; if [[ $conf == "y" ]]; then echo "killing..."; sudo kill -9 $(ps_aux $1 | awk {'print $2}'); sleep 1; echo "remaining: "; ps_aux_command $1 else echo "not killing"; fi ; }
+docker_exec () { if [[ $(docker container ls -q | wc -l) -eq 1 ]]; then docker exec -it $(docker container ls -q) bash; else echo "wrong number of containers running"; fi; }
+update_helper_bash_functions() { if [ ! -f ~/.helper_bash_functions ]; then wget -O ~/.helper_bash_functions https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/.helper_bash_functions
+
+# python linters
+print_reinstall_warning() { echo -e "${Red}INFO: Just installed $1. Please re-run the last command to get the output and formatting that you're expecting.${Color_Off}"; }
+check_pylintrc() { if ! [ -f /tmp/pylintrc ]; then wget -O /tmp/pylintrc https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/pylintrc; fi; }
+check_apt_package() { if [[ $(dpkg -l | grep -w $1 | wc -l) -eq 0 ]]; then sudo apt update && sudo apt install -y $1; echo "installed"; fi; }
+er_flake8_here() { check_pylintrc; NEWLY_INSTALLED=$(check_apt_package "flake8"); flake8 --config /tmp/pylintrc --max-line-length 120; if [[ ${NEWLY_INSTALLED} == *"installed"* ]]; then print_reinstall_warning "flake8"; fi; }
+er_pylint_here() { check_pylintrc; NEWLY_INSTALLED=$(check_apt_package "pylint");  pylint --rcfile /tmp/pylintrc --max-line-length 120 *; if [[ ${NEWLY_INSTALLED} == *"installed"* ]]; then print_reinstall_warning "pylint"; fi; }
+er_pylint_sorted_here() { er_pylint_here | sort -V | grep -v "\*\*\*\*\*\*\*\*"; }
+er_pylint_single_file() { check_pylintrc; check_apt_package "pylint";  pylint --rcfile /tmp/pylintrc --max-line-length 120 $1; }
+er_pylint_single_file_sorted() { er_pylint_single_file $1 | sort -V | grep -v "\*\*\*\*\*\*\*\*"; }
+er_python_linters_here() { echo; er_pylint_sorted_here; echo; er_flake8_here; }
+update_helper_bash_functions() { if [ ! -f ~/.helper_bash_functions ]; then
+                                   echo -e "${Red}ERROR: Tried to replace this file but couldn't find it, something has gone wrong!${Color_Off}\n"
+                                   return
+                                 fi
+                                 wget -O ~/.helper_bash_functions ${THIS_SCRIPT_URL}
+}
