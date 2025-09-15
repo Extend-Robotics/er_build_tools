@@ -2,13 +2,15 @@ name: Check bash
 
 on: [push]
 
+
 jobs:
   check_bash:
     runs-on: ubuntu-latest
-    - name: Debug this
-      run: ls -ltra
+    steps:
+      - name: Debug this
+        run: ls -ltra
 
-    - name: Check bash
-      run: |
-        bash -c "source .helper_bash_functions"
+      - name: Check bash
+        run: |
+          bash -c "source .helper_bash_functions"
 
