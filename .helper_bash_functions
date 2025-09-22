@@ -10,6 +10,7 @@ THIS_SCRIPT_BRANCH="main"
 THIS_SCRIPT_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/.helper_bash_functions"
 
 # ROS helpers
+export ROSCONSOLE_FORMAT='[${severity}](${node}): [${time}] ${message}'
 colcon_build() { START_DIR=$(pwd) && \
                  COLCON_BUILD_COMMAND="colcon build --cmake-args  -DSETUPTOOLS_DEB_LAYOUT=OFF" && \
                  if [ ! -z "$1" ];
