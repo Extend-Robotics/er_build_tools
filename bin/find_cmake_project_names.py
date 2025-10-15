@@ -17,7 +17,19 @@ def _find_closing_bracket(lines, start_index):
             return i
     return -1
 
+def _check_for_catkin_top_level(lines):
+    for line in lines:
+        if 'CATKIN_TOPLEVEL' in line:
+            line = line.split(' ')
+            for i, elem in enumerate(line):
+                if 'CATKIN_TOPLEVEL' in elem:
+                    if 'true' in line[i+1].lower() or '1' in line[i+1]:
+                        return True
+    return False
+
 def _find_project_name_from_cmakelists(lines):
+    if _check_for_catkin_top_level(lines):
+        return None
     for i, line in enumerate(lines):
         if 'project(' in line.lower() or 'project (' in line.lower():
             closing_index = _find_closing_bracket(lines, i)
