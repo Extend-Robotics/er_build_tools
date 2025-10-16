@@ -83,7 +83,7 @@ git config --global alias.sshify '!f() { git remote set-url origin $(git remote 
 git config --global alias.unsshify '!f() { git remote set-url origin $(git remote get-url origin | sed -En "s/git@github.com:/https:\/\/github.com\//p") ; }; f'
 git_add_ssh() { eval "$(ssh-agent -s)"; ssh-add ~/.ssh/id_rsa ; }
 git_print_log() { git log --graph --oneline --decorate --all ; }
-
+git_push_empty_commit() { git commit --allow-empty -m "trigger_checks" && git push origin $(git branch  | grep "\* " | awk '{print $NF}'); }
 
 # General bash helpers
 function confirm() {
