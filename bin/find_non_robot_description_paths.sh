@@ -34,4 +34,4 @@ NON_MODEL_PATHS=$(comm -13 <(find_cmake_for_models ${SEARCH_PATH} | sort) <(find
 for NON_MODEL_PATH in $(echo $NON_MODEL_PATHS ); do PATH_TO_REMOVE=$(dirname ${NON_MODEL_PATH}); echo "${PATH_TO_REMOVE}"; done
 
 
-## EXAMPLE USAGE: python3.8 <(curl -Ls https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/find_non_robot_description_paths.sh) /PATH/TO/SEARCH
+## EXAMPLE USAGE: bash <(curl -Ls https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/find_non_robot_description_paths.sh) /PATH/TO/SEARCH
