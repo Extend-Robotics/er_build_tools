@@ -1,4 +1,5 @@
 #!/bin/bash
+# SKIP_CHECK
 
 find_cmake_for_models() {
     local start_dir="${1:-.}"
