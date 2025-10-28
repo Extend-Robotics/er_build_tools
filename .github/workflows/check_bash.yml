@@ -11,7 +11,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Find and check all bash files
+        shell: bash
         run: |
-          for bash_file in $( grep -rn '.' -e "\#\!/bin/bash" | sed -r 's/:.*//g' ); do echo "Found file containing bash shebang: ${bash_file}. Checking..." && bash -c "source ${bash_file}"; done
+          for bash_file in $( grep -rn '.' -e "\#\!/bin/bash" | sed -r 's/:.*//g' ); do
+            echo "Found file containing bash shebang: ${bash_file}. Checking..."
+            if [[ $(cat ${bash_file} | grep "# SKIP_CHECK" | wc -l) -gt 1 ]]; then
+              echo "SKIP_CHECK found, skipping ${bash_file}"
+              continue
+            fi
+            bash -c "source ${bash_file}"
+          done
 
 
