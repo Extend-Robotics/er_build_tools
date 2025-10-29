@@ -104,6 +104,7 @@ alias cgrep="grep --color=always"
 ps_aux() { ps aux | cgrep $1 | grep -v grep ; }
 ps_aux_command() { ps -e -o command | cgrep $1 | grep -v grep ; }
 grep_all() { grep -rn '.' -e "$1"; }
+find_all() { find '.' -name "*$1*"; }
 cd_ltr(){ cd $1$(ls $1 -ltr -d */ | tail -n 1 | awk '{print $9}'); }
 cats() { for input_file in $@; do echo -e "${input_file}: \n"; highlight -O ansi --force $input_file; echo -e "\n"; done; }
 catsn() { for input_file in $@; do echo -e "${input_file}: \n"; highlight -O ansi --force -n $input_file; echo -e "\n"; done; }
