@@ -120,11 +120,12 @@ update_helper_bash_functions() { if [ ! -f ~/.helper_bash_functions ]; then
 
 # python linters
 LINTER_MAX_LINE_LENGTH="140"
+find_python_files_here() { find . -type f | while read in ; do if file -i "${in}" | grep -q x-python ; then echo -n "${in} " ; fi ; done; }
 print_reinstall_warning() { echo -e "${Red}INFO: Just installed $1. Please re-run the last command to get the output and formatting that you're expecting.${Color_Off}"; }
 check_pylintrc() { if ! [ -f /tmp/pylintrc ]; then wget -O /tmp/pylintrc https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/pylintrc; fi; }
 check_apt_package() { if [[ $(dpkg -l | grep -w $1 | wc -l) -eq 0 ]]; then sudo apt update && sudo apt install -y $1; echo "installed"; fi; }
 er_flake8_here() { check_pylintrc; NEWLY_INSTALLED=$(check_apt_package "flake8"); flake8 --config /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH}; if [[ ${NEWLY_INSTALLED} == *"installed"* ]]; then print_reinstall_warning "flake8"; fi; }
-er_pylint_here() { check_pylintrc; NEWLY_INSTALLED=$(check_apt_package "pylint");  pylint --rcfile /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH} *; if [[ ${NEWLY_INSTALLED} == *"installed"* ]]; then print_reinstall_warning "pylint"; fi; }
+er_pylint_here() { check_pylintrc; NEWLY_INSTALLED=$(check_apt_package "pylint");  pylint --rcfile /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH} $(find_python_files_here); if [[ ${NEWLY_INSTALLED} == *"installed"* ]]; then print_reinstall_warning "pylint"; fi; }
 er_pylint_sorted_here() { er_pylint_here | sort -V | grep -v "\*\*\*\*\*\*\*\*"; }
 er_pylint_single_file() { check_pylintrc; check_apt_package "pylint";  pylint --rcfile /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH} $1; }
 er_pylint_single_file_sorted() { er_pylint_single_file $1 | sort -V | grep -v "\*\*\*\*\*\*\*\*"; }
