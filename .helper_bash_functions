@@ -16,6 +16,19 @@ colcon_build() { START_DIR=$(pwd) && \
                  if [ ! -z "$1" ];
                    then COLCON_BUILD_COMMAND="${COLCON_BUILD_COMMAND} --packages-up-to $1"
                  fi && \
+                 _colcon_build "${COLCON_BUILD_COMMAND}"; RET_VAL=$?; \
+                 return ${RET_VAL}
+}
+colcon_build_sym() { START_DIR=$(pwd) && \
+                 COLCON_BUILD_COMMAND="colcon build --symlink-install --cmake-args  -DSETUPTOOLS_DEB_LAYOUT=OFF" && \
+                 if [ ! -z "$1" ];
+                   then COLCON_BUILD_COMMAND="${COLCON_BUILD_COMMAND} --packages-up-to $1"
+                 fi && \
+                 _colcon_build "${COLCON_BUILD_COMMAND}"; RET_VAL=$?; \
+                 return ${RET_VAL}
+}
+_colcon_build() { START_DIR=$(pwd) && \
+                 COLCON_BUILD_COMMAND="$1" && \
                  cd ${CATKIN_WS_PATH} && \
                  source /opt/ros/noetic/setup.bash && \
                  echo -e "${Yellow}Running build command:\n${Green}${COLCON_BUILD_COMMAND}${Color_Off}" && \
