@@ -11,31 +11,29 @@ THIS_SCRIPT_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tool
 
 # ROS helpers
 export ROSCONSOLE_FORMAT='[${severity}](${node}): [${time}] ${message}'
-colcon_build() { START_DIR=$(pwd) && \
-                 COLCON_BUILD_COMMAND="colcon build --cmake-args  -DSETUPTOOLS_DEB_LAYOUT=OFF" && \
-                 if [ ! -z "$1" ];
-                   then COLCON_BUILD_COMMAND="${COLCON_BUILD_COMMAND} --packages-up-to $1"
-                 fi && \
-                 _colcon_build "${COLCON_BUILD_COMMAND}"; RET_VAL=$?; \
-                 return ${RET_VAL}
+colcon_build() {
+    local cmd="colcon build --cmake-args -DSETUPTOOLS_DEB_LAYOUT=OFF"
+    [ -n "$1" ] && cmd+=" --packages-up-to $1"
+    _colcon_build "$cmd"
+    return $?
 }
-colcon_build_sym() { START_DIR=$(pwd) && \
-                 COLCON_BUILD_COMMAND="colcon build --symlink-install --cmake-args  -DSETUPTOOLS_DEB_LAYOUT=OFF" && \
-                 if [ ! -z "$1" ];
-                   then COLCON_BUILD_COMMAND="${COLCON_BUILD_COMMAND} --packages-up-to $1"
-                 fi && \
-                 _colcon_build "${COLCON_BUILD_COMMAND}"; RET_VAL=$?; \
-                 return ${RET_VAL}
+colcon_build_sym() {
+    local cmd="colcon build --symlink-install --cmake-args -DSETUPTOOLS_DEB_LAYOUT=OFF"
+    [ -n "$1" ] && cmd+=" --packages-up-to $1"
+    _colcon_build "$cmd"
+    return $?
 }
-_colcon_build() { START_DIR=$(pwd) && \
-                 COLCON_BUILD_COMMAND="$1" && \
-                 cd ${CATKIN_WS_PATH} && \
-                 source /opt/ros/noetic/setup.bash && \
-                 echo -e "${Yellow}Running build command:\n${Green}${COLCON_BUILD_COMMAND}${Color_Off}" && \
-                 ${COLCON_BUILD_COMMAND}; RET_VAL=$?;\
-                 source ${CATKIN_WS_PATH}/install/setup.bash; \
-                 cd ${START_DIR}; \
-                 return ${RET_VAL}
+_colcon_build() {
+    local start_dir="$(pwd)"
+    local cmd="$1"
+    cd "$CATKIN_WS_PATH" || return 1
+    source /opt/ros/noetic/setup.bash
+    echo -e "${Yellow}Running build command:\n${Green}${cmd}${Color_Off}"
+    eval "$cmd"
+    local ret_val=$?
+    source "$CATKIN_WS_PATH/install/setup.bash"
+    cd "$start_dir"
+    return $ret_val
 }
 rosdep_install() { rosdep install --from-paths src --ignore-src -r -y ; }
 colcon_test_this_package() { THIS_DIR=$(pwd)
