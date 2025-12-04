@@ -24,6 +24,7 @@ colcon_build() { START_DIR=$(pwd) && \
                  cd ${START_DIR}; \
                  return ${RET_VAL}
 }
+colcon_build_this() { colcon_build "$(find_cmake_project_names_from_dir .)"; }
 rosdep_install() { rosdep install --from-paths src --ignore-src -r -y ; }
 colcon_test_this_package() { THIS_DIR=$(pwd)
                              cd ${CATKIN_WS_PATH}
