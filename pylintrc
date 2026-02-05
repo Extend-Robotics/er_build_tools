@@ -398,7 +398,7 @@ good-names-rgxs=
 include-naming-hint=no
 
 # Naming style matching correct inline iteration names.
-inlinevar-naming-style=any
+inlinevar-naming-style=snake_case
 
 # Regular expression matching correct inline iteration names. Overrides
 # inlinevar-naming-style.
