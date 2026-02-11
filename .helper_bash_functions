@@ -132,6 +132,4 @@ er_pylint_sorted_here() { er_pylint_here | sort -V | grep -v "\*\*\*\*\*\*\*\*";
 er_pylint_single_file() { check_pylintrc; check_apt_package "pylint";  pylint --rcfile /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH} $1; }
 er_pylint_single_file_sorted() { er_pylint_single_file $1 | sort -V | grep -v "\*\*\*\*\*\*\*\*"; }
 er_ruff_here() { ruff check; }
-er_python_linters_here() { local ret=0; echo; er_pylint_sorted_here || ret=$?; echo; er_flake8_here || ret=$?; echo; er_ruff_here || ret=$?; return $ret; }
-
-
+er_python_linters_here() { local ret=0; echo; er_pylint_sorted_here || ret=$?; echo; er_flake8_here || ret=$?; echo; er_ruff_here || ret=$?; echo; if [[ $ret -eq 0 ]]; then echo -e "${Green}All linters passed${Color_Off}"; else echo -e "${Red}Linters failed (exit code $ret)${Color_Off}"; fi; return $ret; }
