@@ -26,13 +26,15 @@ colcon_build() { START_DIR=$(pwd) && \
 }
 colcon_build_this() { colcon_build "$(find_cmake_project_names_from_dir .)"; }
 rosdep_install() { rosdep install --from-paths src --ignore-src -r -y ; }
-colcon_test_this_package() { THIS_DIR=$(pwd)
-                             cd ${CATKIN_WS_PATH}
-                             colcon_build $1
-                             source install/setup.bash && \
-                             colcon test --packages-up-to $1
-                             colcon test-result --verbose
-                             cd $THIS_DIR
+colcon_test_these_packages() { THIS_DIR=$(pwd)
+                               cd ${CATKIN_WS_PATH}
+                               colcon_build_no_deps $1
+                               source install/setup.bash && \
+                               colcon test --packages-select $1
+                               for pkg in $1; do
+                                   colcon test-result --verbose --test-result-base "build/$pkg"
+                               done
+                               cd $THIS_DIR
 
 }
 find_cmake_project_names_from_dir() { if [[ -z $1 ]]; then DIR_TO_SEARCH="."; else DIR_TO_SEARCH=$1; fi; wget -qO- https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/find_cmake_project_names.py | python3 - $DIR_TO_SEARCH; }
