@@ -1,4 +1,6 @@
 #!/bin/bash
+
+# SKIP_CHECK
 set -euo pipefail
 
 # Public wrapper: fetches the real CI reproduction scripts from er_build_tools_internal (private)
