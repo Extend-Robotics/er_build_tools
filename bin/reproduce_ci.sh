@@ -51,7 +51,7 @@ fetch_script() {
     echo "  To:   ${destination}"
 
     local http_code
-    http_code=$(curl -fL -w "%{http_code}" -H "Authorization: token ${gh_token}" "${source_url}" -o "${destination}" 2>/dev/null) || {
+    http_code=$(curl -fSL -w "%{http_code}" -H "Authorization: token ${gh_token}" "${source_url}" -o "${destination}") || {
         echo "  FAILED (HTTP ${http_code})"
         echo ""
         echo "Error: Failed to fetch ${script_name}"
