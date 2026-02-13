@@ -60,6 +60,16 @@ bash <(curl -Ls https://raw.githubusercontent.com/Extend-Robotics/er_build_tools
   --graphical false
 ```
 
+Test with feature branches of both `er_build_tools` and `er_build_tools_internal` (useful when developing the CI scripts themselves):
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/my-feature-branch-in-er-build-tools/bin/reproduce_ci.sh) \
+  --gh-token "$GH_TOKEN" \
+  --repo https://github.com/Extend-Robotics/er_interface \
+  --scripts-branch my-feature-branch-in-er-build-tools-internal \
+  --only-needed-deps
+```
+
 Run xacro lint after build (like er_interface CI does):
 
 ```bash
