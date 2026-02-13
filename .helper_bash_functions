@@ -135,6 +135,9 @@ er_pylint_sorted_here() { er_pylint_here | sort -V | grep -v "\*\*\*\*\*\*\*\*";
 er_pylint_single_file() { check_pylintrc; check_apt_package "pylint";  pylint --rcfile /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH} $1; }
 er_pylint_single_file_sorted() { er_pylint_single_file $1 | sort -V | grep -v "\*\*\*\*\*\*\*\*"; return ${PIPESTATUS[0]}; }
 er_ruff_here() { ruff check; }
+
+
+# reproduce ci locally
 DEFAULT_CI_CONTAINER_NAME="er_ci_reproduced_testing_env"
 reproduce_ci() {
     local token="${ER_SETUP_TOKEN:-}"
@@ -173,6 +176,7 @@ remove_ci_container() {
     docker rm -f "${container_name}"
     echo -e "${Green}Container '${container_name}' removed${Color_Off}"
 }
+
 
 er_python_linters_here() { local ret=0
                            echo
