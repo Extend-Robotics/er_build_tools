@@ -135,6 +135,45 @@ er_pylint_sorted_here() { er_pylint_here | sort -V | grep -v "\*\*\*\*\*\*\*\*";
 er_pylint_single_file() { check_pylintrc; check_apt_package "pylint";  pylint --rcfile /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH} $1; }
 er_pylint_single_file_sorted() { er_pylint_single_file $1 | sort -V | grep -v "\*\*\*\*\*\*\*\*"; return ${PIPESTATUS[0]}; }
 er_ruff_here() { ruff check; }
+DEFAULT_CI_CONTAINER_NAME="er_ci_reproduced_testing_env"
+reproduce_ci() {
+    local token="${ER_SETUP_TOKEN:-}"
+    local args=("$@")
+    local has_token="false"
+    for arg in "${args[@]}"; do
+        if [ "${arg}" = "--gh-token" ] || [ "${arg}" = "-t" ]; then
+            has_token="true"
+            break
+        fi
+    done
+    if [ "${has_token}" = "false" ]; then
+        if [ -z "${token}" ]; then
+            echo -e "${Red}Error: --gh-token not provided and ER_SETUP_TOKEN is not set${Color_Off}"
+            return 1
+        fi
+        args=("--gh-token" "${token}" "${args[@]}")
+    fi
+    bash <(curl -Ls https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/reproduce_ci.sh) "${args[@]}"
+}
+repull_and_rerun_ci_tests() {
+    local container_name="${1:-${DEFAULT_CI_CONTAINER_NAME}}"
+    if ! docker ps --filter "name=^${container_name}$" --format '{{.Names}}' | grep -q .; then
+        echo -e "${Red}Error: Container '${container_name}' is not running${Color_Off}"
+        return 1
+    fi
+    docker exec "${container_name}" bash /tmp/ci_repull_and_retest.sh
+}
+remove_ci_container() {
+    local container_name="${1:-${DEFAULT_CI_CONTAINER_NAME}}"
+    if ! docker ps -a --filter "name=^${container_name}$" --format '{{.Names}}' | grep -q .; then
+        echo -e "${Yellow}Container '${container_name}' does not exist${Color_Off}"
+        return 0
+    fi
+    echo "Stopping and removing container '${container_name}'..."
+    docker rm -f "${container_name}"
+    echo -e "${Green}Container '${container_name}' removed${Color_Off}"
+}
+
 er_python_linters_here() { local ret=0
                            echo
                            er_pylint_sorted_here || ret=$?

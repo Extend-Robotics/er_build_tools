@@ -70,6 +70,7 @@ fetch_script() {
 echo "Fetching scripts from er_build_tools_internal (branch: ${scripts_branch})..."
 fetch_script "reproduce_ci.sh"
 fetch_script "ci_workspace_setup.sh"
+fetch_script "ci_repull_and_retest.sh"
 
 chmod +x "${SCRIPT_DIR}/reproduce_ci.sh"
 echo ""
