@@ -17,7 +17,7 @@ for i in $(seq 1 $#); do
             exit 1
         fi
         gh_token="${!next}"
-    elif [ "${arg}" = "--scripts-branch" ]; then
+    elif [ "${arg}" = "--scripts-branch" ] || [ "${arg}" = "--scripts_branch" ]; then
         next=$((i + 1))
         if [ "${next}" -gt "$#" ]; then
             echo "Error: ${arg} requires a value"
@@ -49,14 +49,15 @@ fetch_script() {
     echo "  To:   ${destination}"
 
     local http_code
-    http_code=$(curl -fL -w "%{http_code}" -H "Authorization: token ${gh_token}" "${source_url}" -o "${destination}" 2>&1) || {
+    http_code=$(curl -fL -w "%{http_code}" -H "Authorization: token ${gh_token}" "${source_url}" -o "${destination}" 2>/dev/null) || {
+        echo "  FAILED (HTTP ${http_code})"
+        echo ""
         echo "Error: Failed to fetch ${script_name}"
-        echo "  HTTP response: ${http_code}"
         echo "  Check that the branch '${scripts_branch}' exists in er_build_tools_internal"
         echo "  Check that your --gh-token has access to Extend-Robotics/er_build_tools_internal"
         exit 1
     }
-    echo "  HTTP ${http_code} - OK"
+    echo "  OK (HTTP ${http_code})"
 
     if [ ! -s "${destination}" ]; then
         echo "Error: Downloaded file is empty: ${destination}"
