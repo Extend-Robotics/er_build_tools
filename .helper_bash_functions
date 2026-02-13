@@ -156,7 +156,12 @@ reproduce_ci() {
         fi
         args=("--gh-token" "${token}" "${args[@]}")
     fi
-    bash <(curl -Ls https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/reproduce_ci.sh) "${args[@]}"
+    local wrapper_script
+    wrapper_script=$(curl -fSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/reproduce_ci.sh) || {
+        echo -e "${Red}Error: Failed to fetch reproduce_ci.sh wrapper from er_build_tools main branch${Color_Off}"
+        return 1
+    }
+    bash <(echo "${wrapper_script}") "${args[@]}"
 }
 repull_and_rerun_ci_tests() {
     local container_name="${1:-${DEFAULT_CI_CONTAINER_NAME}}"
