@@ -33,14 +33,14 @@ if [ -z "${gh_token}" ]; then
     exit 1
 fi
 
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "${TEMP_DIR}"' EXIT
+SCRIPT_DIR="/tmp/er_reproduce_ci"
+mkdir -p "${SCRIPT_DIR}"
 
 RAW_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools_internal/refs/heads/${scripts_branch}"
 
 echo "Fetching scripts from er_build_tools_internal (branch: ${scripts_branch})..."
-curl -sfH "Authorization: token ${gh_token}" "${RAW_URL}/bin/reproduce_ci.sh" -o "${TEMP_DIR}/reproduce_ci.sh"
-curl -sfH "Authorization: token ${gh_token}" "${RAW_URL}/bin/ci_workspace_setup.sh" -o "${TEMP_DIR}/ci_workspace_setup.sh"
+curl -sfH "Authorization: token ${gh_token}" "${RAW_URL}/bin/reproduce_ci.sh" -o "${SCRIPT_DIR}/reproduce_ci.sh"
+curl -sfH "Authorization: token ${gh_token}" "${RAW_URL}/bin/ci_workspace_setup.sh" -o "${SCRIPT_DIR}/ci_workspace_setup.sh"
 
-chmod +x "${TEMP_DIR}/reproduce_ci.sh"
-"${TEMP_DIR}/reproduce_ci.sh" "$@"
+chmod +x "${SCRIPT_DIR}/reproduce_ci.sh"
+"${SCRIPT_DIR}/reproduce_ci.sh" "$@"
