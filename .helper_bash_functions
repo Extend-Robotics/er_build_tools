@@ -143,6 +143,7 @@ reproduce_ci() {
     local token="${ER_SETUP_TOKEN:-}"
     local args=("$@")
     local has_token="false"
+    local CI_BRANCH="ERD-1633_reproduce_ci_locally"
     for arg in "${args[@]}"; do
         if [ "${arg}" = "--gh-token" ] || [ "${arg}" = "-t" ]; then
             has_token="true"
@@ -181,6 +182,7 @@ remove_ci_container() {
     docker rm -f "${container_name}"
     echo -e "${Green}Container '${container_name}' removed${Color_Off}"
 }
+
 
 
 er_python_linters_here() { local ret=0
