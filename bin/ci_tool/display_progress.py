@@ -70,6 +70,30 @@ def format_elapsed(start_time):
     return f"{seconds}s"
 
 
+def format_tool_status(tool_counts, start_time):
+    """Format spinner status text showing tool activity summary."""
+    if not tool_counts:
+        return "[cyan]Working...[/cyan]"
+    parts = []
+    for name, count in tool_counts.items():
+        if count > 1:
+            parts.append(f"{name} x{count}")
+        else:
+            parts.append(name)
+    return f"[cyan]{', '.join(parts)}[/cyan] [dim][{format_elapsed(start_time)}][/dim]"
+
+
+def format_tool_summary(tool_counts):
+    """Format a final one-line summary of all tools used."""
+    parts = []
+    for name, count in tool_counts.items():
+        if count > 1:
+            parts.append(f"{name} x{count}")
+        else:
+            parts.append(name)
+    return ", ".join(parts)
+
+
 def flush_text_buffer(text_buffer):
     """Render accumulated text as rich markdown and clear the buffer."""
     if not text_buffer:
@@ -80,7 +104,7 @@ def flush_text_buffer(text_buffer):
         console.print(Markdown(combined))
 
 
-def handle_assistant_event(message, start_time, text_buffer):
+def handle_assistant_event(message, start_time, text_buffer, tool_counts, status):
     """Display content blocks from an assistant message event."""
     for block in message.get("content", []):
         block_type = block.get("type", "")
@@ -93,33 +117,31 @@ def handle_assistant_event(message, start_time, text_buffer):
         elif block_type == "tool_use":
             flush_text_buffer(text_buffer)
             tool_name = block.get("name", "unknown")
-            console.print(
-                f"\n  [dim]tool:[/dim] [bold]{tool_name}[/bold] "
-                f"[dim][{format_elapsed(start_time)}][/dim]"
-            )
+            tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+            status.update(format_tool_status(tool_counts, start_time))
 
 
-def handle_event(event, start_time, text_buffer):
+def handle_event(event, start_time, text_buffer, tool_counts, status):
     """Handle a single stream-json event. Returns session_id if found, else None."""
     session_id = event.get("session_id") or None
     event_type = event.get("type", "")
 
     if event_type == "assistant":
         message = event.get("message", {})
-        handle_assistant_event(message, start_time, text_buffer)
+        handle_assistant_event(message, start_time, text_buffer, tool_counts, status)
 
     elif event_type == "tool_result":
         flush_text_buffer(text_buffer)
-        console.print(
-            f"  [dim]done[/dim] [{format_elapsed(start_time)}]"
-        )
+        status.update(format_tool_status(tool_counts, start_time))
 
     return session_id
 
 
-def print_session_summary(session_id, start_time):
+def print_session_summary(session_id, start_time, tool_counts):
     """Print the final session summary after stream ends."""
     elapsed = format_elapsed(start_time)
+    if tool_counts:
+        console.print(f"  [dim]Tools: {format_tool_summary(tool_counts)}[/dim]")
     if session_id:
         console.print(
             f"\n[green]Session saved ({session_id}). "
@@ -145,28 +167,28 @@ def main():
     phase = "fixing"
     start_time = time.time()
     text_buffer = []
+    tool_counts = {}
 
     try:
-        console.print("[cyan]  Working...[/cyan]")
+        with console.status("[cyan]Working...[/cyan]", spinner="dots") as status:
+            with open(EVENT_DEBUG_LOG, "w", encoding="utf-8") as debug_log:
+                for line in sys.stdin:
+                    line = line.strip()
+                    if not line:
+                        continue
 
-        with open(EVENT_DEBUG_LOG, "w", encoding="utf-8") as debug_log:
-            for line in sys.stdin:
-                line = line.strip()
-                if not line:
-                    continue
+                    debug_log.write(line + "\n")
+                    debug_log.flush()
 
-                debug_log.write(line + "\n")
-                debug_log.flush()
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        sys.stderr.write(f"  {line}\n")
+                        continue
 
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    sys.stderr.write(f"  {line}\n")
-                    continue
-
-                event_session_id = handle_event(event, start_time, text_buffer)
-                if event_session_id:
-                    session_id = event_session_id
+                    event_session_id = handle_event(event, start_time, text_buffer, tool_counts, status)
+                    if event_session_id:
+                        session_id = event_session_id
 
         flush_text_buffer(text_buffer)
         phase = "completed"
@@ -180,7 +202,7 @@ def main():
         phase = "stuck"
 
     write_state(session_id, phase, attempt_count)
-    print_session_summary(session_id, start_time)
+    print_session_summary(session_id, start_time, tool_counts)
 
 
 if __name__ == "__main__":
