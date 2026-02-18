@@ -183,6 +183,41 @@ remove_ci_container() {
     echo -e "${Green}Container '${container_name}' removed${Color_Off}"
 }
 
+# CI tool (Python CLI) - interactive CI reproduction + Claude-powered fix
+CI_TOOL_CACHE_DIR="${HOME}/.ci_tool"
+CI_TOOL_RAW_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/bin/ci_tool"
+CI_TOOL_FILES="__init__.py __main__.py cli.py preflight.py containers.py ci_reproduce.py claude_setup.py ci_fix.py requirements.txt"
+
+install_ci_tool() {
+    echo -e "${Yellow}Installing ci_tool from er_build_tools (branch: ${THIS_SCRIPT_BRANCH})...${Color_Off}"
+    mkdir -p "${CI_TOOL_CACHE_DIR}/ci_tool"
+    local failed="false"
+    for file in ${CI_TOOL_FILES}; do
+        echo "  Fetching ${file}..."
+        if ! curl -fSL "${CI_TOOL_RAW_URL}/${file}" -o "${CI_TOOL_CACHE_DIR}/ci_tool/${file}"; then
+            echo -e "${Red}  Failed to fetch ${file}${Color_Off}"
+            failed="true"
+        fi
+    done
+    if [ "${failed}" = "true" ]; then
+        echo -e "${Red}Error: Failed to install ci_tool. Check network and branch '${THIS_SCRIPT_BRANCH}'.${Color_Off}"
+        return 1
+    fi
+    echo -e "${Yellow}Installing Python dependencies...${Color_Off}"
+    pip3 install -r "${CI_TOOL_CACHE_DIR}/ci_tool/requirements.txt"
+    echo -e "${Green}ci_tool installed to ${CI_TOOL_CACHE_DIR}${Color_Off}"
+}
+
+update_ci_tool() { install_ci_tool; }
+
+ci_tool() {
+    if [ ! -d "${CI_TOOL_CACHE_DIR}/ci_tool" ]; then
+        echo -e "${Yellow}ci_tool not found locally. Installing...${Color_Off}"
+        install_ci_tool || return 1
+    fi
+    python3 "${CI_TOOL_CACHE_DIR}/ci_tool" "$@"
+}
+ci_fix() { ci_tool fix "$@"; }
 
 
 er_python_linters_here() { local ret=0
