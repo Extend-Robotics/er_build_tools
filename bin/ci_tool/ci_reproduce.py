@@ -38,6 +38,14 @@ def extract_branch_from_args(args):
     return None
 
 
+def extract_container_name_from_args(args):
+    """Extract --container-name/-n value from args list, or return None."""
+    for i, arg in enumerate(args):
+        if arg in ("--container-name", "-n") and i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
 def prompt_for_reproduce_args():
     """Interactively ask user for the required reproduce arguments."""
     repo_url = inquirer.text(
@@ -74,7 +82,7 @@ def reproduce_ci(args, skip_preflight=False):
             console.print(f"\n[bold red]Preflight failed:[/bold red] {error}")
             sys.exit(1)
 
-    container_name = DEFAULT_CONTAINER_NAME
+    container_name = extract_container_name_from_args(args) or DEFAULT_CONTAINER_NAME
 
     if container_exists(container_name):
         action = inquirer.select(
