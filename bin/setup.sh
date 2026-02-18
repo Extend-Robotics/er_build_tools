@@ -27,7 +27,7 @@ echo -e "${Color_Off}"
 
 # --- Step 1: Install/update .helper_bash_functions ---
 
-echo -e "${Bold}[1/4] Installing helper bash functions...${Color_Off}"
+echo -e "${Bold}[1/5] Installing helper bash functions...${Color_Off}"
 if [ -f "${HELPER_PATH}" ]; then
     echo -e "${Yellow}  Existing ~/.helper_bash_functions found — updating while preserving your variables...${Color_Off}"
     tmp_new=$(mktemp)
@@ -45,7 +45,7 @@ fi
 # --- Step 2: GitHub token ---
 
 echo ""
-echo -e "${Bold}[2/4] GitHub token${Color_Off}"
+echo -e "${Bold}[2/5] GitHub token${Color_Off}"
 echo -e "  ci_tool needs a GitHub token with ${Bold}repo${Color_Off} scope to access private repos."
 echo -e "  Create one at: ${Cyan}https://github.com/settings/tokens${Color_Off}"
 echo ""
@@ -77,7 +77,7 @@ fi
 # --- Step 3: Shell integration ---
 
 echo ""
-echo -e "${Bold}[3/4] Shell integration${Color_Off}"
+echo -e "${Bold}[3/5] Shell integration${Color_Off}"
 BASHRC="${HOME}/.bashrc"
 if [ -f "${BASHRC}" ] && grep -q 'source ~/.helper_bash_functions' "${BASHRC}"; then
     echo -e "  ${Green}Already sourced in ~/.bashrc${Color_Off}"
@@ -89,7 +89,7 @@ fi
 # --- Step 4: Claude Code authentication ---
 
 echo ""
-echo -e "${Bold}[4/4] Claude Code authentication${Color_Off}"
+echo -e "${Bold}[4/5] Claude Code authentication${Color_Off}"
 echo -e "  ci_tool uses Claude Code to autonomously fix CI failures."
 echo -e "  Claude must be installed and authenticated on your host machine."
 echo ""
@@ -117,16 +117,55 @@ else
     echo -e "  Then run ${Bold}claude${Color_Off} to authenticate."
 fi
 
+# --- Step 5: Install ci_tool ---
+
+echo ""
+echo -e "${Bold}[5/5] Installing ci_tool...${Color_Off}"
+
+CI_TOOL_DIR="${HOME}/.ci_tool"
+CI_TOOL_URL="${BASE_URL}/bin/ci_tool"
+
+mkdir -p "${CI_TOOL_DIR}/ci_tool/ci_context"
+
+CI_TOOL_FILES=(
+    "__init__.py"
+    "__main__.py"
+    "cli.py"
+    "ci_fix.py"
+    "ci_reproduce.py"
+    "claude_setup.py"
+    "claude_session.py"
+    "containers.py"
+    "preflight.py"
+    "display_progress.py"
+    "requirements.txt"
+)
+
+for file in "${CI_TOOL_FILES[@]}"; do
+    curl -fsSL "${CI_TOOL_URL}/${file}" -o "${CI_TOOL_DIR}/ci_tool/${file}" || {
+        echo -e "  ${Red}Failed to download ${file}${Color_Off}"
+        exit 1
+    }
+done
+
+curl -fsSL "${CI_TOOL_URL}/ci_context/CLAUDE.md" \
+    -o "${CI_TOOL_DIR}/ci_tool/ci_context/CLAUDE.md" 2>/dev/null || true
+
+pip3 install --user --quiet -r "${CI_TOOL_DIR}/ci_tool/requirements.txt" 2>/dev/null || {
+    echo -e "  ${Yellow}Some dependencies may not have installed. ci_tool will retry on first run.${Color_Off}"
+}
+
+echo -e "  ${Green}ci_tool installed at ${CI_TOOL_DIR}${Color_Off}"
+
 # --- Done ---
 
 echo ""
 echo -e "${Bold}${Green}Setup complete!${Color_Off}"
 echo ""
-echo -e "  Reload your shell or run:"
-echo -e "    ${Bold}source ~/.helper_bash_functions${Color_Off}"
+
+# Source helper functions so GH_TOKEN is available for ci_tool
+source "${HELPER_PATH}" 2>/dev/null || true
+
+echo -e "  ${Bold}${Cyan}Launching ci_tool...${Color_Off}"
 echo ""
-echo -e "  Then start ci_tool:"
-echo -e "    ${Bold}ci_tool${Color_Off}          Interactive menu"
-echo -e "    ${Bold}ci_fix${Color_Off}           Fix CI failures with Claude"
-echo -e "    ${Bold}ci_tool reproduce${Color_Off} Reproduce CI locally"
-echo ""
+exec python3 "${CI_TOOL_DIR}/ci_tool/__main__.py"
