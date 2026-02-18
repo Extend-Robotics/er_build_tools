@@ -35,6 +35,10 @@ def _parse_repo_url(repo_url):
 
     Returns (org, repo_name, clean_url) tuple.
     """
+    if not repo_url.startswith("https://github.com/"):
+        raise ValueError(
+            f"URL must start with https://github.com/, got: {repo_url}"
+        )
     clean_url = repo_url.rstrip("/").removesuffix(".git")
     repo_path = clean_url.removeprefix("https://github.com/")
     parts = repo_path.split("/")
@@ -107,6 +111,8 @@ def _fetch_internal_scripts(gh_token, scripts_branch):
         INTERNAL_REPO, "bin/ci_repull_and_retest.sh", scripts_branch, gh_token,
     )
 
+    # Scripts are bind-mounted into the container, so they must persist on the
+    # host for the container's lifetime. Temp dir is not cleaned up here.
     script_dir = tempfile.mkdtemp(prefix="ci_reproduce_scripts_")
     setup_script_host_path = os.path.join(script_dir, "ci_workspace_setup.sh")
     retest_script_host_path = os.path.join(script_dir, "ci_repull_and_retest.sh")
@@ -136,7 +142,11 @@ def _build_graphical_docker_args():
         )
 
     console.print("  Enabling graphical forwarding (X11 + NVIDIA)...")
-    subprocess.run(["xhost", "+local:"], check=False, capture_output=True)
+    xhost_result = subprocess.run(
+        ["xhost", "+local:"], check=False, capture_output=True
+    )
+    if xhost_result.returncode != 0:
+        console.print("  [yellow]xhost +local: failed — graphical forwarding may not work[/yellow]")
 
     return [
         "--runtime", "nvidia",
@@ -327,11 +337,10 @@ def reproduce_ci(
     # Run workspace setup
     _docker_exec_workspace_setup(container_name)
 
-    # Container existence guard
+    # Safety net: verify the container survived workspace setup
     if not container_exists(container_name):
         raise RuntimeError(
-            f"Container '{container_name}' does not exist after execution. "
-            "Docker create or start may have failed silently."
+            f"Container '{container_name}' does not exist after workspace setup."
         )
 
     console.print(f"\n[green]\u2713 Container '{container_name}' is ready[/green]")
