@@ -34,9 +34,11 @@ def install_claude_in_container(container_name):
 
 
 def install_fzf_in_container(container_name):
-    """Install fzf in the container."""
+    """Install fzf in the container (non-critical)."""
     console.print("[cyan]Installing fzf in container...[/cyan]")
-    docker_exec(container_name, "apt-get update && apt-get install -y fzf", check=False)
+    result = docker_exec(container_name, "apt-get update && apt-get install -y fzf", check=False)
+    if result.returncode != 0:
+        console.print("[yellow]fzf installation failed (non-critical) — continuing[/yellow]")
 
 
 def install_python_deps_in_container(container_name):
@@ -187,7 +189,10 @@ def save_package_list(container_name):
         quiet=True,
     )
     if result.returncode != 0:
-        console.print("[yellow]Could not save package list (colcon list failed)[/yellow]")
+        console.print(
+            "[yellow]Could not save package list (colcon list failed). "
+            "The 'rerun_tests' helper will not work.[/yellow]"
+        )
 
 
 def inject_rerun_tests_function(container_name):
@@ -267,7 +272,7 @@ def get_host_git_config(key):
 
 def configure_git_in_container(container_name):
     """Set up git identity, token-based auth, and gh CLI auth in the container."""
-    gh_token = os.environ.get("GH_TOKEN", "")
+    gh_token = os.environ.get("GH_TOKEN") or os.environ.get("ER_SETUP_TOKEN") or ""
 
     git_user_name = get_host_git_config("user.name")
     git_user_email = get_host_git_config("user.email")
@@ -276,20 +281,26 @@ def configure_git_in_container(container_name):
     docker_exec(container_name, f'git config --global user.name "{git_user_name}"')
     docker_exec(container_name, f'git config --global user.email "{git_user_email}"')
 
-    if gh_token:
-        docker_exec(
-            container_name,
-            f'git config --global url."https://{gh_token}@github.com/"'
-            f'.insteadOf "https://github.com/"',
-            quiet=True,
+    if not gh_token:
+        console.print(
+            "[yellow]No GH_TOKEN or ER_SETUP_TOKEN found — "
+            "git auth and gh CLI will not be configured in container[/yellow]"
         )
-        install_and_auth_gh_cli(container_name, gh_token)
+        return
+
+    docker_exec(
+        container_name,
+        f'git config --global url."https://{gh_token}@github.com/"'
+        f'.insteadOf "https://github.com/"',
+        quiet=True,
+    )
+    install_and_auth_gh_cli(container_name, gh_token)
 
 
 def install_and_auth_gh_cli(container_name, gh_token):
     """Install gh CLI and authenticate with the provided token."""
     console.print("[cyan]Installing gh CLI in container...[/cyan]")
-    docker_exec(container_name, (
+    install_result = docker_exec(container_name, (
         "type gh >/dev/null 2>&1 || ("
         "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg "
         "| dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg "
@@ -300,13 +311,25 @@ def install_and_auth_gh_cli(container_name, gh_token):
         "| tee /etc/apt/sources.list.d/github-cli-stable.list > /dev/null "
         "&& apt-get update && apt-get install -y gh)"
     ), check=False)
+    if install_result.returncode != 0:
+        console.print(
+            "[yellow]gh CLI installation failed — "
+            "Claude will not be able to interact with GitHub from inside the container[/yellow]"
+        )
+        return
+
     console.print("[cyan]Authenticating gh CLI...[/cyan]")
-    docker_exec(
+    auth_result = docker_exec(
         container_name,
         f'echo "{gh_token}" | gh auth login --with-token',
         check=False,
         quiet=True,
     )
+    if auth_result.returncode != 0:
+        console.print(
+            "[yellow]gh CLI authentication failed — "
+            "Claude will not be able to interact with GitHub from inside the container[/yellow]"
+        )
 
 
 def is_claude_installed_in_container(container_name):

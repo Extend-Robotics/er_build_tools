@@ -35,6 +35,8 @@ def container_exists(container_name=DEFAULT_CONTAINER_NAME):
         ["docker", "ps", "-a", "--filter", f"name=^{container_name}$", "--format", "{{.Names}}"],
         capture_output=True, text=True, check=False,
     )
+    if result.returncode != 0:
+        raise RuntimeError(f"docker ps failed: {result.stderr.strip()}")
     return container_name in result.stdout.strip()
 
 
@@ -44,6 +46,8 @@ def container_is_running(container_name=DEFAULT_CONTAINER_NAME):
         ["docker", "ps", "--filter", f"name=^{container_name}$", "--format", "{{.Names}}"],
         capture_output=True, text=True, check=False,
     )
+    if result.returncode != 0:
+        raise RuntimeError(f"docker ps failed: {result.stderr.strip()}")
     return container_name in result.stdout.strip()
 
 
@@ -65,6 +69,8 @@ def list_ci_containers():
          "--format", "{{.Names}}\t{{.Status}}"],
         capture_output=True, text=True, check=False,
     )
+    if result.returncode != 0:
+        raise RuntimeError(f"docker ps failed: {result.stderr.strip()}")
     if not result.stdout.strip():
         return []
     containers = []

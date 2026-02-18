@@ -52,7 +52,10 @@ def read_existing_attempt_count():
     try:
         with open(STATE_FILE, encoding="utf-8") as state_file:
             return json.load(state_file).get("attempt_count", 0)
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+    except FileNotFoundError:
+        return 0
+    except (json.JSONDecodeError, KeyError) as error:
+        console.print(f"[yellow]State file corrupt, resetting attempt count: {error}[/yellow]")
         return 0
 
 
@@ -120,7 +123,7 @@ def print_session_summary(session_id, start_time):
             console.print("[yellow]Claude stderr output:[/yellow]")
             console.print(stderr_content)
     except FileNotFoundError:
-        pass
+        console.print(f"[dim]No stderr log at {CLAUDE_STDERR_LOG}[/dim]")
 
 
 def main():
@@ -145,6 +148,7 @@ def main():
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
+                    sys.stderr.write(f"  {line}\n")
                     continue
 
                 event_session_id = handle_event(event, start_time)
@@ -155,7 +159,7 @@ def main():
 
     except KeyboardInterrupt:
         phase = "interrupted"
-    except Exception:  # pylint: disable=broad-except
+    except (IOError, ValueError, UnicodeDecodeError):
         console.print(
             f"\n[red]Display processor error:[/red]\n{traceback.format_exc()}"
         )

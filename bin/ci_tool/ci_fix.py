@@ -113,6 +113,10 @@ def read_container_state(container_name):
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
+        console.print(
+            f"[yellow]State file exists but contains invalid JSON: "
+            f"{result.stdout[:200]}[/yellow]"
+        )
         return None
 
 
@@ -355,23 +359,35 @@ def run_claude_streamed(container_name, prompt):
     """Run Claude non-interactively with stream-json output."""
     escaped_prompt = prompt.replace("'", "'\\''")
     claude_command = (
+        f"set -o pipefail && "
         f"cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions "
         f"-p '{escaped_prompt}' --verbose --output-format stream-json "
         f"2>{CLAUDE_STDERR_LOG} | ci_fix_display"
     )
-    docker_exec(container_name, claude_command, tty=True, check=False, quiet=True)
+    result = docker_exec(container_name, claude_command, tty=True, check=False, quiet=True)
+    if result.returncode != 0:
+        console.print(
+            f"[yellow]Claude exited with code {result.returncode} — "
+            f"check {CLAUDE_STDERR_LOG} inside the container for details[/yellow]"
+        )
 
 
 def run_claude_resumed(container_name, session_id, prompt):
     """Resume a Claude session with a new prompt, streaming output."""
     escaped_prompt = prompt.replace("'", "'\\''")
     claude_command = (
+        f"set -o pipefail && "
         f"cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions "
         f"--resume '{session_id}' -p '{escaped_prompt}' "
         f"--verbose --output-format stream-json "
         f"2>{CLAUDE_STDERR_LOG} | ci_fix_display"
     )
-    docker_exec(container_name, claude_command, tty=True, check=False, quiet=True)
+    result = docker_exec(container_name, claude_command, tty=True, check=False, quiet=True)
+    if result.returncode != 0:
+        console.print(
+            f"[yellow]Claude exited with code {result.returncode} — "
+            f"check {CLAUDE_STDERR_LOG} inside the container for details[/yellow]"
+        )
 
 
 def prompt_user_for_feedback():
@@ -431,7 +447,7 @@ def run_claude_workflow(container_name, ci_run_info):
 
         # Fix phase (resume session)
         state = read_container_state(container_name)
-        session_id = state["session_id"] if state else None
+        session_id = state.get("session_id") if state else None
         if session_id:
             console.print(
                 "\n[bold cyan]Resuming Claude "
@@ -540,13 +556,17 @@ def fix_ci(_args):
         console.print(
             "[dim]You are now in an interactive Claude session[/dim]\n"
         )
-        docker_exec(
+        result = docker_exec(
             container_name,
             "cd /ros_ws && IS_SANDBOX=1 claude "
             "--dangerously-skip-permissions "
             f'--resume "{resume_session_id}"',
             interactive=True, check=False,
         )
+        if result.returncode != 0:
+            console.print(
+                f"[yellow]Claude exited with code {result.returncode}[/yellow]"
+            )
     else:
         run_claude_workflow(
             container_name, session.get("ci_run_info")

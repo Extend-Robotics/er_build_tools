@@ -199,10 +199,20 @@ def _docker_create_and_start(
     console.print(f"  [green]\u2713[/green] Container '{container_name}' started")
 
 
+def _container_path_exists(container_name, path):
+    """Check if a path exists inside a container."""
+    result = subprocess.run(
+        ["docker", "exec", container_name, "test", "-e", path],
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def _docker_exec_workspace_setup(container_name):
     """Run ci_workspace_setup.sh inside the container.
 
-    Handles KeyboardInterrupt gracefully by letting the container keep running.
+    Raises RuntimeError if setup fails before the build completes.
+    Warns (but continues) if tests fail after a successful build.
     """
     console.print("\n  Running CI workspace setup inside container...")
     try:
@@ -215,13 +225,26 @@ def _docker_exec_workspace_setup(container_name):
             "\n[yellow]Interrupted during workspace setup "
             "-- container is still running with partial setup[/yellow]"
         )
+        raise
+
+    if result.returncode == 0:
         return
 
-    if result.returncode != 0:
-        console.print(
-            f"\n[yellow]Workspace setup exited with code {result.returncode} "
-            f"(expected if tests failed)[/yellow]"
+    # Non-zero exit: distinguish setup failure from test failure by checking
+    # whether the build actually completed (/ros_ws/install only exists after
+    # a successful colcon build).
+    build_completed = _container_path_exists(container_name, "/ros_ws/install")
+
+    if not build_completed:
+        raise RuntimeError(
+            f"Workspace setup failed (exit code {result.returncode}). "
+            f"The build did not complete — check the output above for errors."
         )
+
+    console.print(
+        f"\n[yellow]Tests exited with code {result.returncode} "
+        f"(build succeeded, test failures are expected)[/yellow]"
+    )
 
 
 def prompt_for_repo_and_branch():
