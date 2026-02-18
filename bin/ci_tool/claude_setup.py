@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -14,8 +15,6 @@ from ci_tool.containers import docker_exec, docker_cp_to_container
 console = Console()
 
 CLAUDE_HOME = Path.home() / ".claude"
-GIT_USER_NAME = "Tom Queen"
-GIT_USER_EMAIL = "tom.queen@extendrobotics.com"
 
 
 def install_node_in_container(container_name):
@@ -119,19 +118,38 @@ def copy_helper_bash_functions(container_name):
     )
 
 
+def get_host_git_config(key):
+    """Read a value from the host's git config."""
+    result = subprocess.run(
+        ["git", "config", "--global", key],
+        capture_output=True, text=True, check=False,
+    )
+    value = result.stdout.strip()
+    if not value:
+        raise RuntimeError(
+            f"git config --global {key} is not set on the host. "
+            f"Set it with: git config --global {key} 'Your Value'"
+        )
+    return value
+
+
 def configure_git_in_container(container_name):
     """Set up git identity, token-based auth, and gh CLI auth in the container."""
     gh_token = os.environ.get("GH_TOKEN", "")
 
+    git_user_name = get_host_git_config("user.name")
+    git_user_email = get_host_git_config("user.email")
+
     console.print("[cyan]Configuring git in container...[/cyan]")
-    docker_exec(container_name, f'git config --global user.name "{GIT_USER_NAME}"')
-    docker_exec(container_name, f'git config --global user.email "{GIT_USER_EMAIL}"')
+    docker_exec(container_name, f'git config --global user.name "{git_user_name}"')
+    docker_exec(container_name, f'git config --global user.email "{git_user_email}"')
 
     if gh_token:
         docker_exec(
             container_name,
             f'git config --global url."https://{gh_token}@github.com/"'
             f'.insteadOf "https://github.com/"',
+            quiet=True,
         )
         install_and_auth_gh_cli(container_name, gh_token)
 
@@ -155,6 +173,7 @@ def install_and_auth_gh_cli(container_name, gh_token):
         container_name,
         f'echo "{gh_token}" | gh auth login --with-token',
         check=False,
+        quiet=True,
     )
 
 

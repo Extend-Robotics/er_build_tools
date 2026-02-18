@@ -23,16 +23,7 @@ from ci_tool.preflight import run_all_preflight_checks, PreflightError
 
 console = Console()
 
-DEFAULT_PROMPT = (
-    "You are inside a CI reproduction container at /ros_ws. "
-    "Source the ROS workspace: "
-    "`source /opt/ros/noetic/setup.bash && source /ros_ws/install/setup.bash`.\n\n"
-    "The CI tests have already been run. Your job:\n"
-    "1. Examine the test output in /ros_ws/test_output.log to identify failures\n"
-    "2. Find and fix the root cause in the source code under /ros_ws/src/\n"
-    "3. Rebuild the affected packages\n"
-    "4. Re-run the failing tests to verify your fix\n"
-    "5. Iterate until all tests pass\n\n"
+SUMMARY_FORMAT = (
     "When done, print EXACTLY this format:\n\n"
     "--- SUMMARY ---\n"
     "Problem: <what was wrong>\n"
@@ -43,11 +34,26 @@ DEFAULT_PROMPT = (
     "--- END ---"
 )
 
-CI_RUN_COMPARE_PROMPT = (
+ROS_SOURCE_PREAMBLE = (
     "You are inside a CI reproduction container at /ros_ws. "
     "Source the ROS workspace: "
     "`source /opt/ros/noetic/setup.bash && source /ros_ws/install/setup.bash`.\n\n"
-    "A GitHub Actions CI run is available at: {ci_run_url}\n"
+)
+
+FIX_FROM_LOG_PROMPT = (
+    ROS_SOURCE_PREAMBLE
+    + "The CI tests have already been run. Your job:\n"
+    "1. Examine the test output in /ros_ws/test_output.log to identify failures\n"
+    "2. Find and fix the root cause in the source code under /ros_ws/src/\n"
+    "3. Rebuild the affected packages\n"
+    "4. Re-run the failing tests to verify your fix\n"
+    "5. Iterate until all tests pass\n\n"
+    + SUMMARY_FORMAT
+)
+
+CI_RUN_COMPARE_PROMPT_TEMPLATE = (
+    ROS_SOURCE_PREAMBLE
+    + "A GitHub Actions CI run is available at: {ci_run_url}\n"
     "Use `gh run view {run_id} --log-failed` or `gh run view {run_id} --log` "
     "to fetch the CI logs.\n\n"
     "There is a discrepancy between local and CI test results. Your job:\n"
@@ -57,15 +63,14 @@ CI_RUN_COMPARE_PROMPT = (
     "4. Investigate the root cause of any discrepancy (environment differences, "
     "timing, missing deps, etc.)\n"
     "5. Fix the issue and verify locally\n\n"
-    "When done, print EXACTLY this format:\n\n"
-    "--- SUMMARY ---\n"
-    "Problem: <what was wrong, which tests differed and why>\n"
-    "Fix: <what you changed>\n"
-    "Assumptions: <any assumptions you made, or 'None'>\n\n"
-    "--- COMMIT MESSAGE ---\n"
-    "<brief concise commit message, no leading/trailing whitespace>\n"
-    "--- END ---"
+    + SUMMARY_FORMAT
 )
+
+FIX_MODE_CHOICES = [
+    {"name": "Fix CI failures (from test_output.log)", "value": "fix_from_log"},
+    {"name": "Compare with GitHub Actions CI run", "value": "compare_ci_run"},
+    {"name": "Custom prompt", "value": "custom"},
+]
 
 
 def extract_run_id_from_url(ci_run_url):
@@ -75,7 +80,6 @@ def extract_run_id_from_url(ci_run_url):
       https://github.com/org/repo/actions/runs/12345678901
       https://github.com/org/repo/actions/runs/12345678901/job/98765
     """
-    # Split on /runs/ and take the next path segment
     parts = ci_run_url.rstrip("/").split("/runs/")
     if len(parts) < 2:
         raise ValueError(f"Cannot extract run ID from URL: {ci_run_url}")
@@ -85,24 +89,39 @@ def extract_run_id_from_url(ci_run_url):
     return run_id
 
 
+def select_fix_mode():
+    """Let the user choose how Claude should fix CI failures."""
+    mode = inquirer.select(
+        message="How should Claude fix CI?",
+        choices=FIX_MODE_CHOICES,
+        default="fix_from_log",
+    ).execute()
+
+    if mode == "fix_from_log":
+        return FIX_FROM_LOG_PROMPT
+
+    if mode == "compare_ci_run":
+        ci_run_url = inquirer.text(
+            message="GitHub Actions run URL:",
+            validate=lambda url: "/runs/" in url,
+            invalid_message="URL must contain /runs/ (e.g. https://github.com/org/repo/actions/runs/12345)",
+        ).execute()
+        run_id = extract_run_id_from_url(ci_run_url)
+        return CI_RUN_COMPARE_PROMPT_TEMPLATE.format(ci_run_url=ci_run_url, run_id=run_id)
+
+    return inquirer.text(message="Enter your custom prompt for Claude:").execute()
+
+
 def parse_fix_args(args):
     """Parse fix-specific arguments, separating them from reproduce args."""
     parsed = {
-        "prompt": None,
         "container_name": DEFAULT_CONTAINER_NAME,
-        "ci_run_url": None,
         "reproduce_args": [],
     }
 
     i = 0
     while i < len(args):
-        if args[i] == "--prompt" and i + 1 < len(args):
-            parsed["prompt"] = args[i + 1]
-            i += 2
-        elif args[i] == "--ci-run" and i + 1 < len(args):
-            parsed["ci_run_url"] = args[i + 1]
-            i += 2
-        elif args[i] in ("--container-name", "-n") and i + 1 < len(args):
+        if args[i] in ("--container-name", "-n") and i + 1 < len(args):
             parsed["container_name"] = args[i + 1]
             i += 2
         else:
@@ -112,24 +131,10 @@ def parse_fix_args(args):
     return parsed
 
 
-def build_prompt(parsed):
-    """Build the Claude prompt based on parsed args."""
-    if parsed["prompt"] is not None:
-        return parsed["prompt"]
-
-    ci_run_url = parsed["ci_run_url"]
-    if ci_run_url:
-        run_id = extract_run_id_from_url(ci_run_url)
-        return CI_RUN_COMPARE_PROMPT.format(ci_run_url=ci_run_url, run_id=run_id)
-
-    return DEFAULT_PROMPT
-
-
 def fix_ci(args):
     """Main fix workflow: preflight -> ensure container -> install Claude -> run -> drop to shell."""
     parsed = parse_fix_args(args)
     container_name = parsed["container_name"]
-    prompt = build_prompt(parsed)
 
     console.print(Panel("[bold cyan]CI Fix with Claude[/bold cyan]", expand=False))
 
@@ -188,7 +193,9 @@ def fix_ci(args):
     # Step 2: Install Claude in container
     setup_claude_in_container(container_name)
 
-    # Step 3: Launch Claude
+    # Step 3: Select fix mode and launch Claude
+    prompt = select_fix_mode()
+
     console.print("\n[bold cyan]Launching Claude Code...[/bold cyan]")
     console.print("[dim]Claude will attempt to fix CI failures autonomously[/dim]\n")
 

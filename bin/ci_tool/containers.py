@@ -21,9 +21,10 @@ def require_docker():
         sys.exit(1)
 
 
-def run_command(command, capture_output=False, check=True):
+def run_command(command, capture_output=False, check=True, quiet=False):
     """Run a shell command, raising on failure."""
-    console.print(f"[dim]$ {' '.join(command)}[/dim]")
+    if not quiet:
+        console.print(f"[dim]$ {' '.join(command)}[/dim]")
     return subprocess.run(command, capture_output=capture_output, check=check, text=True)
 
 
@@ -56,13 +57,13 @@ def remove_container(container_name=DEFAULT_CONTAINER_NAME):
     console.print(f"[green]Container '{container_name}' removed[/green]")
 
 
-def docker_exec(container_name, command, interactive=False, check=True):
+def docker_exec(container_name, command, interactive=False, check=True, quiet=False):
     """Run a command inside a container."""
     docker_command = ["docker", "exec"]
     if interactive:
         docker_command.extend(["-it"])
     docker_command.extend([container_name, "bash", "-c", command])
-    return run_command(docker_command, check=check)
+    return run_command(docker_command, check=check, quiet=quiet)
 
 
 def docker_exec_interactive(container_name=DEFAULT_CONTAINER_NAME):

@@ -23,16 +23,6 @@ console = Console()
 DEFAULT_SCRIPTS_BRANCH = "ERD-1633_reproduce_ci_locally"
 
 
-def get_gh_token():
-    """Get GitHub token from environment."""
-    token = os.environ.get("GH_TOKEN") or os.environ.get("ER_SETUP_TOKEN") or ""
-    if not token:
-        raise RuntimeError(
-            "No GitHub token found. Set GH_TOKEN or ER_SETUP_TOKEN environment variable."
-        )
-    return token
-
-
 def extract_repo_url_from_args(args):
     """Extract --repo/-r value from args list, or return None."""
     for i, arg in enumerate(args):
@@ -84,7 +74,10 @@ def reproduce_ci(args, skip_preflight=False):
         ))
         sys.exit(1)
 
-    token = get_gh_token()
+    token = os.environ.get("GH_TOKEN") or os.environ.get("ER_SETUP_TOKEN") or ""
+    if not token:
+        console.print("[red]No GitHub token found. Set GH_TOKEN or ER_SETUP_TOKEN.[/red]")
+        sys.exit(1)
     scripts_branch = DEFAULT_SCRIPTS_BRANCH
 
     filtered_args = []
