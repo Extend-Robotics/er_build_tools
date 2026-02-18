@@ -291,7 +291,7 @@ def fix_ci(args):
         f"cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions "
         f"-p '{escaped_prompt}'"
     )
-    docker_exec(container_name, claude_command, check=False)
+    docker_exec(container_name, claude_command, interactive=True, check=False)
 
     # Step 5: Drop into interactive shell
     console.print("\n[bold green]Claude has finished.[/bold green]")
