@@ -184,7 +184,7 @@ def prompt_for_session_name(branch_hint=None):
     """
     default = sanitize_container_name(branch_hint) if branch_hint else ""
     name = inquirer.text(
-        message="Session name (used for container naming):",
+        message="Session name (container will be er_ci_<name>):",
         default=default,
         validate=lambda n: len(n.strip()) > 0,
         invalid_message="Session name cannot be empty",
