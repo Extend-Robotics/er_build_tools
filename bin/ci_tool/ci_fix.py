@@ -181,13 +181,6 @@ def fix_ci(args):
         needs_reproduce = True
 
     if needs_reproduce:
-        if not parsed["reproduce_args"]:
-            console.print("[red]No container exists and no reproduce args provided.[/red]")
-            console.print(
-                "Pass repo args, e.g.: ci_tool fix -r https://github.com/... "
-                "-b main --only-needed-deps"
-            )
-            sys.exit(1)
         reproduce_ci(parsed["reproduce_args"], skip_preflight=True)
 
     # Step 2: Install Claude in container

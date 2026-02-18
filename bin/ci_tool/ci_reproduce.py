@@ -8,7 +8,6 @@ import sys
 
 from InquirerPy import inquirer
 from rich.console import Console
-from rich.panel import Panel
 
 from ci_tool.containers import (
     DEFAULT_CONTAINER_NAME,
@@ -29,6 +28,31 @@ def extract_repo_url_from_args(args):
         if arg in ("--repo", "-r") and i + 1 < len(args):
             return args[i + 1]
     return None
+
+
+def prompt_for_reproduce_args():
+    """Interactively ask user for the required reproduce arguments."""
+    repo_url = inquirer.text(
+        message="Repository URL:",
+        validate=lambda url: url.startswith("https://github.com/"),
+        invalid_message="Must be a GitHub URL (https://github.com/...)",
+    ).execute()
+
+    branch = inquirer.text(
+        message="Branch name:",
+        validate=lambda b: len(b.strip()) > 0,
+        invalid_message="Branch name cannot be empty",
+    ).execute()
+
+    build_everything = inquirer.confirm(
+        message="Build everything (slower, disable --only-needed-deps)?",
+        default=False,
+    ).execute()
+
+    args = ["-r", repo_url, "-b", branch]
+    if not build_everything:
+        args.append("--only-needed-deps")
+    return args
 
 
 def reproduce_ci(args, skip_preflight=False):
@@ -65,14 +89,7 @@ def reproduce_ci(args, skip_preflight=False):
             return
 
     if not args:
-        console.print(Panel(
-            "[bold]Reproduce CI requires arguments.[/bold]\n\n"
-            "Example:\n"
-            "  ci_tool reproduce -r https://github.com/extend-robotics/er_interface "
-            "-b main --only-needed-deps",
-            title="Usage",
-        ))
-        sys.exit(1)
+        args = prompt_for_reproduce_args()
 
     token = os.environ.get("GH_TOKEN") or os.environ.get("ER_SETUP_TOKEN") or ""
     if not token:
