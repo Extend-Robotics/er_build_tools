@@ -294,11 +294,14 @@ def configure_git_in_container(container_name):
         f'.insteadOf "https://github.com/"',
         quiet=True,
     )
-    install_and_auth_gh_cli(container_name, gh_token)
+    install_gh_cli(container_name)
 
 
-def install_and_auth_gh_cli(container_name, gh_token):
-    """Install gh CLI and authenticate with the provided token."""
+def install_gh_cli(container_name):
+    """Install gh CLI in the container.
+
+    Authentication is handled by the GH_TOKEN env var already set on the container.
+    """
     console.print("[cyan]Installing gh CLI in container...[/cyan]")
     install_result = docker_exec(container_name, (
         "type gh >/dev/null 2>&1 || ("
@@ -314,20 +317,6 @@ def install_and_auth_gh_cli(container_name, gh_token):
     if install_result.returncode != 0:
         console.print(
             "[yellow]gh CLI installation failed — "
-            "Claude will not be able to interact with GitHub from inside the container[/yellow]"
-        )
-        return
-
-    console.print("[cyan]Authenticating gh CLI...[/cyan]")
-    auth_result = docker_exec(
-        container_name,
-        f'echo "{gh_token}" | gh auth login --with-token',
-        check=False,
-        quiet=True,
-    )
-    if auth_result.returncode != 0:
-        console.print(
-            "[yellow]gh CLI authentication failed — "
             "Claude will not be able to interact with GitHub from inside the container[/yellow]"
         )
 
