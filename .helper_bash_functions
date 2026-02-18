@@ -26,13 +26,33 @@ colcon_build() { START_DIR=$(pwd) && \
 }
 colcon_build_this() { colcon_build "$(find_cmake_project_names_from_dir .)"; }
 rosdep_install() { rosdep install --from-paths src --ignore-src -r -y ; }
+_show_test_failures() {
+    python3 - "$@" <<'PYEOF'
+import sys, xml.etree.ElementTree as ET
+from pathlib import Path
+for d in sys.argv[1:]:
+    for p in sorted(Path(d).rglob("*.xml")):
+        for tc in ET.parse(p).iter("testcase"):
+            for f in list(tc.iter("failure")) + list(tc.iter("error")):
+                tag = "FAIL" if f.tag == "failure" else "ERROR"
+                print(f"\n  {tag}: {tc.get('classname', '')}.{tc.get('name', '')}")
+                if f.text:
+                    lines = f.text.strip().splitlines()
+                    for l in lines[:20]:
+                        print(f"    {l}")
+                    if len(lines) > 20:
+                        print(f"    ... ({len(lines) - 20} more lines)")
+PYEOF
+}
 colcon_test_these_packages() { THIS_DIR=$(pwd)
                                cd ${CATKIN_WS_PATH}
                                colcon_build_no_deps $1
                                source install/setup.bash && \
                                colcon test --packages-select $1
                                for pkg in $1; do
-                                   colcon test-result --verbose --test-result-base "build/$pkg"
+                                   if ! colcon test-result --test-result-base "build/$pkg/test_results"; then
+                                       _show_test_failures "build/$pkg/test_results"
+                                   fi
                                done
                                cd $THIS_DIR
 
