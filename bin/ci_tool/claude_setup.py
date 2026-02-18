@@ -120,7 +120,7 @@ def copy_helper_bash_functions(container_name):
 
 
 def configure_git_in_container(container_name):
-    """Set up git identity and token-based auth in the container."""
+    """Set up git identity, token-based auth, and gh CLI auth in the container."""
     gh_token = os.environ.get("GH_TOKEN", "")
 
     console.print("[cyan]Configuring git in container...[/cyan]")
@@ -133,6 +133,29 @@ def configure_git_in_container(container_name):
             f'git config --global url."https://{gh_token}@github.com/"'
             f'.insteadOf "https://github.com/"',
         )
+        install_and_auth_gh_cli(container_name, gh_token)
+
+
+def install_and_auth_gh_cli(container_name, gh_token):
+    """Install gh CLI and authenticate with the provided token."""
+    console.print("[cyan]Installing gh CLI in container...[/cyan]")
+    docker_exec(container_name, (
+        "type gh >/dev/null 2>&1 || ("
+        "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg "
+        "| dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg "
+        "&& chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg "
+        '&& echo "deb [arch=$(dpkg --print-architecture) '
+        "signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] "
+        'https://cli.github.com/packages stable main" '
+        "| tee /etc/apt/sources.list.d/github-cli-stable.list > /dev/null "
+        "&& apt-get update && apt-get install -y gh)"
+    ), check=False)
+    console.print("[cyan]Authenticating gh CLI...[/cyan]")
+    docker_exec(
+        container_name,
+        f'echo "{gh_token}" | gh auth login --with-token',
+        check=False,
+    )
 
 
 def setup_claude_in_container(container_name):

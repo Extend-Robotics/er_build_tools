@@ -116,11 +116,35 @@ ps_aux() { ps aux | cgrep $1 | grep -v grep ; }
 kill_any_process() { ps_aux_command $1; conf="$(confirm "kill these processes? [Y/n]")"; if [[ $conf == "y" ]]; then echo "killing..."; sudo kill -9 $(ps_aux $1 | awk {'print $2}'); sleep 1; echo "remaining: "; ps_aux_command $1 else echo "not killing"; fi ; }
 docker_exec () { if [[ $(docker container ls -q | wc -l) -eq 1 ]]; then docker exec -it $(docker container ls -q) bash; else echo "wrong number of containers running"; fi; }
 awk_line_length() { if [[ -z $2 ]]; then MAX_LINE_LENGTH=200; else MAX_LINE_LENGTH=$2; fi; cat $1 | awk 'length($0) < '"$MAX_LINE_LENGTH"''; }
-update_helper_bash_functions() { if [ ! -f ~/.helper_bash_functions ]; then
-                                   echo -e "${Red}ERROR: Tried to replace this file but couldn't find it, something has gone wrong!${Color_Off}\n"
-                                   return
-                                 fi
-                                 wget -O ~/.helper_bash_functions ${THIS_SCRIPT_URL}
+MERGE_VARS_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/bin/merge_helper_vars.py"
+
+update_helper_bash_functions() {
+    if [ ! -f ~/.helper_bash_functions ]; then
+        echo -e "${Red}ERROR: Tried to replace this file but couldn't find it, something has gone wrong!${Color_Off}\n"
+        return 1
+    fi
+
+    local tmp_new
+    tmp_new=$(mktemp)
+    if ! wget -q -O "${tmp_new}" "${THIS_SCRIPT_URL}"; then
+        echo -e "${Red}Error: Failed to download updated helper_bash_functions${Color_Off}"
+        rm -f "${tmp_new}"
+        return 1
+    fi
+
+    local merge_script
+    merge_script=$(curl -fSL "${MERGE_VARS_URL}") || {
+        echo -e "${Red}Error: Failed to fetch merge_helper_vars.py${Color_Off}"
+        rm -f "${tmp_new}"
+        return 1
+    }
+
+    python3 <(echo "${merge_script}") ~/.helper_bash_functions "${tmp_new}"
+    cp "${tmp_new}" ~/.helper_bash_functions
+    rm -f "${tmp_new}"
+
+    echo ""
+    echo -e "${Green}helper_bash_functions updated. Run 'source ~/.helper_bash_functions' to reload.${Color_Off}"
 }
 
 # python linters
@@ -204,7 +228,10 @@ install_ci_tool() {
         return 1
     fi
     echo -e "${Yellow}Installing Python dependencies...${Color_Off}"
-    pip3 install -r "${CI_TOOL_CACHE_DIR}/ci_tool/requirements.txt"
+    if ! pip3 install --user -r "${CI_TOOL_CACHE_DIR}/ci_tool/requirements.txt"; then
+        echo -e "${Red}Error: Failed to install Python dependencies${Color_Off}"
+        return 1
+    fi
     echo -e "${Green}ci_tool installed to ${CI_TOOL_CACHE_DIR}${Color_Off}"
 }
 

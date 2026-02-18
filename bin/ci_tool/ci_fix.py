@@ -43,12 +43,54 @@ DEFAULT_PROMPT = (
     "--- END ---"
 )
 
+CI_RUN_COMPARE_PROMPT = (
+    "You are inside a CI reproduction container at /ros_ws. "
+    "Source the ROS workspace: "
+    "`source /opt/ros/noetic/setup.bash && source /ros_ws/install/setup.bash`.\n\n"
+    "A GitHub Actions CI run is available at: {ci_run_url}\n"
+    "Use `gh run view {run_id} --log-failed` or `gh run view {run_id} --log` "
+    "to fetch the CI logs.\n\n"
+    "There is a discrepancy between local and CI test results. Your job:\n"
+    "1. Run the tests locally and capture the results\n"
+    "2. Fetch the CI run logs using the gh CLI\n"
+    "3. Compare the two - identify tests that pass locally but fail in CI, or vice versa\n"
+    "4. Investigate the root cause of any discrepancy (environment differences, "
+    "timing, missing deps, etc.)\n"
+    "5. Fix the issue and verify locally\n\n"
+    "When done, print EXACTLY this format:\n\n"
+    "--- SUMMARY ---\n"
+    "Problem: <what was wrong, which tests differed and why>\n"
+    "Fix: <what you changed>\n"
+    "Assumptions: <any assumptions you made, or 'None'>\n\n"
+    "--- COMMIT MESSAGE ---\n"
+    "<brief concise commit message, no leading/trailing whitespace>\n"
+    "--- END ---"
+)
+
+
+def extract_run_id_from_url(ci_run_url):
+    """Extract the numeric run ID from a GitHub Actions URL.
+
+    Handles URLs like:
+      https://github.com/org/repo/actions/runs/12345678901
+      https://github.com/org/repo/actions/runs/12345678901/job/98765
+    """
+    # Split on /runs/ and take the next path segment
+    parts = ci_run_url.rstrip("/").split("/runs/")
+    if len(parts) < 2:
+        raise ValueError(f"Cannot extract run ID from URL: {ci_run_url}")
+    run_id = parts[1].split("/")[0]
+    if not run_id.isdigit():
+        raise ValueError(f"Run ID is not numeric: {run_id}")
+    return run_id
+
 
 def parse_fix_args(args):
     """Parse fix-specific arguments, separating them from reproduce args."""
     parsed = {
-        "prompt": DEFAULT_PROMPT,
+        "prompt": None,
         "container_name": DEFAULT_CONTAINER_NAME,
+        "ci_run_url": None,
         "reproduce_args": [],
     }
 
@@ -56,6 +98,9 @@ def parse_fix_args(args):
     while i < len(args):
         if args[i] == "--prompt" and i + 1 < len(args):
             parsed["prompt"] = args[i + 1]
+            i += 2
+        elif args[i] == "--ci-run" and i + 1 < len(args):
+            parsed["ci_run_url"] = args[i + 1]
             i += 2
         elif args[i] in ("--container-name", "-n") and i + 1 < len(args):
             parsed["container_name"] = args[i + 1]
@@ -67,11 +112,24 @@ def parse_fix_args(args):
     return parsed
 
 
+def build_prompt(parsed):
+    """Build the Claude prompt based on parsed args."""
+    if parsed["prompt"] is not None:
+        return parsed["prompt"]
+
+    ci_run_url = parsed["ci_run_url"]
+    if ci_run_url:
+        run_id = extract_run_id_from_url(ci_run_url)
+        return CI_RUN_COMPARE_PROMPT.format(ci_run_url=ci_run_url, run_id=run_id)
+
+    return DEFAULT_PROMPT
+
+
 def fix_ci(args):
     """Main fix workflow: preflight -> ensure container -> install Claude -> run -> drop to shell."""
     parsed = parse_fix_args(args)
     container_name = parsed["container_name"]
-    prompt = parsed["prompt"]
+    prompt = build_prompt(parsed)
 
     console.print(Panel("[bold cyan]CI Fix with Claude[/bold cyan]", expand=False))
 
