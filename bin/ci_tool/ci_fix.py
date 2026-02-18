@@ -23,14 +23,12 @@ from ci_tool.claude_setup import (
     save_package_list,
 )
 from ci_tool.containers import (
-    DEFAULT_CONTAINER_NAME,
     container_exists,
     container_is_running,
     docker_exec,
     docker_exec_interactive,
     list_ci_containers,
     remove_container,
-    rename_container,
     sanitize_container_name,
     start_container,
 )
@@ -353,11 +351,10 @@ def fix_ci(args):
 
     # Step 2: Reproduce CI in container
     if needs_reproduce:
-        if container_exists(DEFAULT_CONTAINER_NAME):
-            remove_container(DEFAULT_CONTAINER_NAME)
-        reproduce_ci(parsed["reproduce_args"], skip_preflight=True)
-        if container_name != DEFAULT_CONTAINER_NAME:
-            rename_container(DEFAULT_CONTAINER_NAME, container_name)
+        if container_exists(container_name):
+            remove_container(container_name)
+        reproduce_args = parsed["reproduce_args"] + ["--container-name", container_name]
+        reproduce_ci(reproduce_args, skip_preflight=True)
         save_package_list(container_name)
 
     # Step 3: Setup Claude in container (idempotent — skips if already installed)
