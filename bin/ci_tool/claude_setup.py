@@ -138,7 +138,25 @@ rerun_tests() {
     colcon build --packages-select ${packages} --cmake-args -DSETUPTOOLS_DEB_LAYOUT=OFF
     source /ros_ws/install/setup.bash
     colcon test --packages-select ${packages}
-    colcon test-result --verbose
+    for pkg in ${packages}; do
+        if ! colcon test-result --test-result-base "build/$pkg/test_results"; then
+            python3 - "build/$pkg/test_results" <<'PYEOF'
+import sys, xml.etree.ElementTree as ET
+from pathlib import Path
+for p in sorted(Path(sys.argv[1]).rglob("*.xml")):
+    for tc in ET.parse(p).iter("testcase"):
+        for f in list(tc.iter("failure")) + list(tc.iter("error")):
+            tag = "FAIL" if f.tag == "failure" else "ERROR"
+            print(f"\n  {tag}: {tc.get('classname', '')}.{tc.get('name', '')}")
+            if f.text:
+                lines = f.text.strip().splitlines()
+                for l in lines[:20]:
+                    print(f"    {l}")
+                if len(lines) > 20:
+                    print(f"    ... ({len(lines) - 20} more lines)")
+PYEOF
+        fi
+    done
 }
 '''
 
