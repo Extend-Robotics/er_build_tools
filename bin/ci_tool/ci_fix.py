@@ -297,7 +297,7 @@ def run_claude_streamed(container_name, prompt):
     escaped_prompt = prompt.replace("'", "'\\''")
     claude_command = (
         f"cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions "
-        f"-p '{escaped_prompt}' --output-format stream-json "
+        f"-p '{escaped_prompt}' --verbose --output-format stream-json "
         f"2>{CLAUDE_STDERR_LOG} | ci_fix_display"
     )
     docker_exec(container_name, claude_command, check=False)
@@ -308,7 +308,7 @@ def run_claude_resumed(container_name, session_id, prompt):
     escaped_prompt = prompt.replace("'", "'\\''")
     claude_command = (
         f"cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions "
-        f"--resume '{session_id}' -p '{escaped_prompt}' --output-format stream-json "
+        f"--resume '{session_id}' -p '{escaped_prompt}' --verbose --output-format stream-json "
         f"2>{CLAUDE_STDERR_LOG} | ci_fix_display"
     )
     docker_exec(container_name, claude_command, check=False)
