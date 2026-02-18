@@ -337,6 +337,7 @@ def reproduce_ci(  # pylint: disable=too-many-arguments
         "ONLY_NEEDED_DEPS": "true" if only_needed_deps else "false",
         "SKIP_TESTS": "false",
         "ADDITIONAL_COMMAND": "",
+        "IS_SANDBOX": "1",
     }
 
     # Volume mounts (scripts mounted read-only into the container)

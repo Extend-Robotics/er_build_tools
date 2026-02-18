@@ -92,7 +92,7 @@ def docker_exec(  # pylint: disable=too-many-arguments
     container_name, command, interactive=False, tty=False, check=True, quiet=False,
 ):
     """Run a command inside a container."""
-    docker_command = ["docker", "exec"]
+    docker_command = ["docker", "exec", "-e", "IS_SANDBOX=1"]
     if interactive:
         docker_command.extend(["-it"])
     elif tty:
@@ -105,7 +105,7 @@ def docker_exec_interactive(container_name=DEFAULT_CONTAINER_NAME):
     """Drop user into an interactive shell inside the container."""
     console.print(f"\n[bold cyan]Entering container '{container_name}'...[/bold cyan]")
     console.print("[dim]Type 'exit' to leave the container[/dim]\n")
-    os.execvp("docker", ["docker", "exec", "-it", container_name, "bash"])
+    os.execvp("docker", ["docker", "exec", "-e", "IS_SANDBOX=1", "-it", container_name, "bash"])
 
 
 def docker_cp_to_container(host_path, container_name, container_path):
