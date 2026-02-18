@@ -210,7 +210,7 @@ remove_ci_container() {
 # CI tool (Python CLI) - interactive CI reproduction + Claude-powered fix
 CI_TOOL_CACHE_DIR="${HOME}/.ci_tool"
 CI_TOOL_RAW_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/bin/ci_tool"
-CI_TOOL_FILES="__init__.py __main__.py cli.py preflight.py containers.py ci_reproduce.py claude_setup.py ci_fix.py claude_session.py requirements.txt"
+CI_TOOL_FILES="__init__.py __main__.py cli.py preflight.py containers.py ci_reproduce.py claude_setup.py ci_fix.py claude_session.py display_progress.py requirements.txt"
 CI_TOOL_DATA_FILES="ci_context/CLAUDE.md"
 
 install_ci_tool() {

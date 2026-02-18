@@ -39,6 +39,22 @@ def install_fzf_in_container(container_name):
     docker_exec(container_name, "apt-get update && apt-get install -y fzf", check=False)
 
 
+def install_python_deps_in_container(container_name):
+    """Install ci_tool Python dependencies (rich, etc.) in the container."""
+    requirements_file = Path(__file__).parent / "requirements.txt"
+    if not requirements_file.exists():
+        return
+
+    console.print("[cyan]Installing Python dependencies in container...[/cyan]")
+    docker_cp_to_container(
+        str(requirements_file), container_name, "/tmp/ci_tool_requirements.txt"
+    )
+    docker_exec(
+        container_name,
+        "pip install --quiet -r /tmp/ci_tool_requirements.txt",
+    )
+
+
 def copy_claude_credentials(container_name):
     """Copy Claude credentials into the container."""
     credentials_path = CLAUDE_HOME / ".credentials.json"
@@ -88,6 +104,58 @@ def copy_ci_context(container_name):
     console.print("[cyan]Copying CI context CLAUDE.md...[/cyan]")
     docker_exec(container_name, "mkdir -p /root/.claude")
     docker_cp_to_container(str(ci_claude_md), container_name, "/root/.claude/CLAUDE.md")
+
+
+def copy_display_script(container_name):
+    """Copy the stream-json display processor into the container."""
+    display_script = Path(__file__).parent / "display_progress.py"
+    if not display_script.exists():
+        raise RuntimeError(f"display_progress.py not found at {display_script}")
+
+    console.print("[cyan]Copying ci_fix display script...[/cyan]")
+    docker_cp_to_container(
+        str(display_script), container_name, "/usr/local/bin/ci_fix_display"
+    )
+    docker_exec(container_name, "chmod +x /usr/local/bin/ci_fix_display")
+
+
+RESUME_CLAUDE_FUNCTION = r'''
+resume_claude() {
+    local state_file="/ros_ws/.ci_fix_state.json"
+    if [ ! -f "$state_file" ]; then
+        echo "No ci_fix state found. Run ci_fix first."
+        return 1
+    fi
+    local session_id
+    session_id=$(python3 -c "import json,sys; print(json.load(open('$state_file'))['session_id'])")
+    if [ -z "$session_id" ] || [ "$session_id" = "None" ]; then
+        echo "No session_id in state file. Starting fresh Claude session."
+        cd /ros_ws && claude --dangerously-skip-permissions
+        return
+    fi
+    echo "Resuming Claude session ${session_id}..."
+    cd /ros_ws && claude --dangerously-skip-permissions --resume "$session_id"
+}
+'''
+
+
+def inject_resume_function(container_name):
+    """Add resume_claude bash function to the container's bashrc."""
+    console.print("[cyan]Injecting resume_claude function...[/cyan]")
+    marker = "# ci_fix resume_claude"
+    check_command = f"grep -q '{marker}' /root/.bashrc"
+    already_present = docker_exec(
+        container_name, check_command, check=False, quiet=True,
+    )
+    if already_present.returncode == 0:
+        return
+
+    docker_exec(
+        container_name,
+        f"echo '{marker}' >> /root/.bashrc && cat >> /root/.bashrc << 'RESUME_EOF'\n"
+        f"{RESUME_CLAUDE_FUNCTION}\nRESUME_EOF",
+        quiet=True,
+    )
 
 
 def copy_claude_memory(container_name):
@@ -206,9 +274,12 @@ def setup_claude_in_container(container_name):
     install_node_in_container(container_name)
     install_claude_in_container(container_name)
     install_fzf_in_container(container_name)
+    install_python_deps_in_container(container_name)
     copy_claude_credentials(container_name)
     copy_claude_config(container_name)
     copy_ci_context(container_name)
+    copy_display_script(container_name)
+    inject_resume_function(container_name)
     copy_claude_memory(container_name)
     copy_helper_bash_functions(container_name)
     configure_git_in_container(container_name)

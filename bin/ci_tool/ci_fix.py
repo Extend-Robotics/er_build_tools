@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from urllib.request import Request, urlopen
 
@@ -11,7 +12,14 @@ from InquirerPy import inquirer
 from rich.console import Console
 from rich.panel import Panel
 
-from ci_tool.claude_setup import setup_claude_in_container
+from ci_tool.claude_setup import (
+    setup_claude_in_container,
+    is_claude_installed_in_container,
+    copy_claude_credentials,
+    copy_ci_context,
+    copy_display_script,
+    inject_resume_function,
+)
 from ci_tool.containers import (
     DEFAULT_CONTAINER_NAME,
     container_exists,
@@ -86,6 +94,20 @@ FIX_MODE_CHOICES = [
 ]
 
 
+def read_container_state(container_name):
+    """Read the ci_fix state file from a container. Returns dict or None."""
+    result = subprocess.run(
+        ["docker", "exec", container_name, "cat", "/ros_ws/.ci_fix_state.json"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
 def extract_run_id_from_url(ci_run_url):
     """Extract the numeric run ID from a GitHub Actions URL.
 
@@ -155,21 +177,7 @@ def select_fix_mode():
 
 def parse_fix_args(args):
     """Parse fix-specific arguments, separating them from reproduce args."""
-    parsed = {
-        "container_name": DEFAULT_CONTAINER_NAME,
-        "reproduce_args": [],
-    }
-
-    i = 0
-    while i < len(args):
-        if args[i] in ("--container-name", "-n") and i + 1 < len(args):
-            parsed["container_name"] = args[i + 1]
-            i += 2
-        else:
-            parsed["reproduce_args"].append(args[i])
-            i += 1
-
-    return parsed
+    return {"reproduce_args": list(args)}
 
 
 def prompt_for_session_name(branch_hint=None):
@@ -197,7 +205,7 @@ def prompt_for_session_name(branch_hint=None):
 def select_or_create_session(parsed):
     """Let user resume an existing session or start a new one.
 
-    Returns (container_name, ci_run_info, needs_reproduce).
+    Returns (container_name, ci_run_info, needs_reproduce, resume_session_id).
     Mutates parsed["reproduce_args"] if CI URL is provided.
     """
     existing = list_ci_containers()
@@ -218,7 +226,29 @@ def select_or_create_session(parsed):
         if selection != "_new":
             if not container_is_running(selection):
                 start_container(selection)
-            return selection, None, False
+
+            state = read_container_state(selection)
+            if state and state.get("session_id"):
+                session_id = state["session_id"]
+                phase = state.get("phase", "unknown")
+                attempt = state.get("attempt_count", 0)
+                console.print(
+                    f"  [dim]Previous session: {phase} "
+                    f"(attempt {attempt}, id: {session_id})[/dim]"
+                )
+
+                resume_choice = inquirer.select(
+                    message="Resume previous Claude session or start fresh?",
+                    choices=[
+                        {"name": f"Resume session ({phase})", "value": "resume"},
+                        {"name": "Start fresh fix attempt", "value": "fresh"},
+                    ],
+                ).execute()
+
+                if resume_choice == "resume":
+                    return selection, None, False, session_id
+
+            return selection, None, False, None
 
     # New session: ask for optional CI URL
     ci_run_info = None
@@ -240,7 +270,7 @@ def select_or_create_session(parsed):
 
     branch_hint = ci_run_info["branch"] if ci_run_info else None
     container_name = prompt_for_session_name(branch_hint)
-    return container_name, ci_run_info, True
+    return container_name, ci_run_info, True, None
 
 
 def fix_ci(args):
@@ -255,8 +285,9 @@ def fix_ci(args):
         branch_hint = extract_branch_from_args(parsed["reproduce_args"])
         container_name = prompt_for_session_name(branch_hint)
         needs_reproduce = True
+        resume_session_id = None
     else:
-        container_name, ci_run_info, needs_reproduce = select_or_create_session(parsed)
+        container_name, ci_run_info, needs_reproduce, resume_session_id = select_or_create_session(parsed)
 
     # Step 1: Preflight checks
     repo_url = extract_repo_url_from_args(parsed["reproduce_args"])
@@ -274,29 +305,62 @@ def fix_ci(args):
         if container_name != DEFAULT_CONTAINER_NAME:
             rename_container(DEFAULT_CONTAINER_NAME, container_name)
 
-    # Step 3: Install Claude in container
-    setup_claude_in_container(container_name)
-
-    # Step 4: Select fix mode and launch Claude
-    if ci_run_info:
-        prompt = CI_RUN_COMPARE_PROMPT_TEMPLATE.format(**ci_run_info)
+    # Step 3: Setup Claude in container (idempotent — skips if already installed)
+    if is_claude_installed_in_container(container_name):
+        console.print("[green]Claude already installed — refreshing config...[/green]")
+        copy_claude_credentials(container_name)
+        copy_ci_context(container_name)
+        copy_display_script(container_name)
+        inject_resume_function(container_name)
     else:
-        prompt = select_fix_mode()
+        setup_claude_in_container(container_name)
 
-    console.print("\n[bold cyan]Launching Claude Code...[/bold cyan]")
-    console.print("[dim]Claude will attempt to fix CI failures autonomously[/dim]\n")
+    # Step 3.5: If resuming, launch interactive Claude
+    if resume_session_id:
+        console.print("\n[bold cyan]Resuming Claude session...[/bold cyan]")
+        console.print("[dim]You are now in an interactive Claude session[/dim]\n")
+        docker_exec(
+            container_name,
+            f'cd /ros_ws && claude --dangerously-skip-permissions --resume "{resume_session_id}"',
+            interactive=True, check=False,
+        )
+    else:
+        # Step 4: Select fix mode and launch Claude
+        if ci_run_info:
+            prompt = CI_RUN_COMPARE_PROMPT_TEMPLATE.format(**ci_run_info)
+        else:
+            prompt = select_fix_mode()
 
-    escaped_prompt = prompt.replace("'", "'\\''")
-    claude_command = (
-        f"cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions "
-        f"-p '{escaped_prompt}'"
-    )
-    docker_exec(container_name, claude_command, interactive=True, check=False)
+        console.print("\n[bold cyan]Launching Claude Code...[/bold cyan]")
+        console.print("[dim]Claude will attempt to fix CI failures autonomously[/dim]")
+        console.print("[dim]Progress will be displayed below[/dim]\n")
 
-    # Step 5: Drop into interactive shell
-    console.print("\n[bold green]Claude has finished.[/bold green]")
-    console.print("[cyan]Dropping you into the container shell.[/cyan]")
-    console.print("[dim]You can run 'git diff', 'git add', 'git commit' etc.[/dim]")
-    console.print("[dim]The repo is at /ros_ws/src/<repo_name>[/dim]\n")
+        escaped_prompt = prompt.replace("'", "'\\''")
+        claude_command = (
+            f"cd /ros_ws && claude --dangerously-skip-permissions "
+            f"-p '{escaped_prompt}' --output-format stream-json "
+            f"2>/dev/null | ci_fix_display"
+        )
+        docker_exec(container_name, claude_command, check=False)
+
+        # Step 4.5: Show outcome
+        state = read_container_state(container_name)
+        if state:
+            phase = state.get("phase", "unknown")
+            session_id = state.get("session_id")
+            attempt = state.get("attempt_count", 1)
+            console.print(f"\n[bold]Claude finished — phase: {phase}, attempt: {attempt}[/bold]")
+            if session_id:
+                console.print(f"[dim]Session ID: {session_id}[/dim]")
+        else:
+            console.print("\n[yellow]Could not read state file from container[/yellow]")
+
+    # Step 5: Drop into container shell (both paths converge here)
+    console.print("\n[bold green]Dropping into container shell.[/bold green]")
+    console.print("[cyan]Useful commands:[/cyan]")
+    console.print("  [bold]resume_claude[/bold]  — resume the Claude session interactively")
+    console.print("  [bold]git diff[/bold]        — review changes")
+    console.print("  [bold]git add && git commit[/bold] — commit fixes")
+    console.print(f"  [dim]Repo is at /ros_ws/src/<repo_name>[/dim]\n")
 
     docker_exec_interactive(container_name)
