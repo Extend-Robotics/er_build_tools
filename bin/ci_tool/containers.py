@@ -77,11 +77,6 @@ def list_ci_containers():
     return containers
 
 
-def rename_container(old_name, new_name):
-    """Rename a Docker container."""
-    run_command(["docker", "rename", old_name, new_name])
-
-
 def sanitize_container_name(name):
     """Replace characters invalid for Docker container names with underscores."""
     return re.sub(r'[^a-zA-Z0-9_.-]', '_', name)
