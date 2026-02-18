@@ -21,6 +21,7 @@ from rich.spinner import Spinner
 from rich.text import Text
 
 STATE_FILE = "/ros_ws/.ci_fix_state.json"
+CLAUDE_STDERR_LOG = "/ros_ws/.claude_stderr.log"
 
 console = Console(stderr=True)
 
@@ -137,6 +138,14 @@ def main():
         )
     else:
         console.print(f"\n[yellow]No session ID captured. Elapsed: {elapsed}.[/yellow]")
+        try:
+            with open(CLAUDE_STDERR_LOG, encoding="utf-8") as stderr_log:
+                stderr_content = stderr_log.read().strip()
+            if stderr_content:
+                console.print("[yellow]Claude stderr output:[/yellow]")
+                console.print(stderr_content)
+        except FileNotFoundError:
+            pass
 
 
 if __name__ == "__main__":

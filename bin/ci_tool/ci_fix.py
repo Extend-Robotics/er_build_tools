@@ -291,13 +291,16 @@ def build_analysis_prompt(ci_run_info):
     return ANALYSIS_PROMPT_TEMPLATE.format(extra_context=extra_context)
 
 
+CLAUDE_STDERR_LOG = "/ros_ws/.claude_stderr.log"
+
+
 def run_claude_streamed(container_name, prompt):
     """Run Claude non-interactively with stream-json output piped to ci_fix_display."""
     escaped_prompt = prompt.replace("'", "'\\''")
     claude_command = (
         f"cd /ros_ws && claude --dangerously-skip-permissions "
         f"-p '{escaped_prompt}' --output-format stream-json "
-        f"2>/dev/null | ci_fix_display"
+        f"2>{CLAUDE_STDERR_LOG} | ci_fix_display"
     )
     docker_exec(container_name, claude_command, check=False)
 
@@ -308,7 +311,7 @@ def run_claude_resumed(container_name, session_id, prompt):
     claude_command = (
         f"cd /ros_ws && claude --dangerously-skip-permissions "
         f"--resume '{session_id}' -p '{escaped_prompt}' --output-format stream-json "
-        f"2>/dev/null | ci_fix_display"
+        f"2>{CLAUDE_STDERR_LOG} | ci_fix_display"
     )
     docker_exec(container_name, claude_command, check=False)
 
