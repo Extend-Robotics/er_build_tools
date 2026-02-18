@@ -71,7 +71,9 @@ def validate_gh_token(repo_url=None):
         raise PreflightError(f"Cannot reach GitHub API: {error.reason}") from error
 
     if repo_url:
-        repo_url_clean = repo_url.rstrip("/").removesuffix(".git")
+        repo_url_clean = repo_url.rstrip("/")
+        if repo_url_clean.endswith(".git"):
+            repo_url_clean = repo_url_clean[:-4]
         repo_path = repo_url_clean.split("github.com/")[-1]
         try:
             _github_api_get(f"/repos/{repo_path}", gh_token)
