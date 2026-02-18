@@ -149,11 +149,11 @@ resume_claude() {
     session_id=$(python3 -c "import json,sys; print(json.load(open('$state_file'))['session_id'])")
     if [ -z "$session_id" ] || [ "$session_id" = "None" ]; then
         echo "No session_id in state file. Starting fresh Claude session."
-        cd /ros_ws && claude --dangerously-skip-permissions
+        cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions
         return
     fi
     echo "Resuming Claude session ${session_id}..."
-    cd /ros_ws && claude --dangerously-skip-permissions --resume "$session_id"
+    cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions --resume "$session_id"
 }
 '''
 
