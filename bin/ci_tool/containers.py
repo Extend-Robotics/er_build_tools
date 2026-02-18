@@ -82,11 +82,15 @@ def sanitize_container_name(name):
     return re.sub(r'[^a-zA-Z0-9_.-]', '_', name)
 
 
-def docker_exec(container_name, command, interactive=False, check=True, quiet=False):
+def docker_exec(  # pylint: disable=too-many-arguments
+    container_name, command, interactive=False, tty=False, check=True, quiet=False,
+):
     """Run a command inside a container."""
     docker_command = ["docker", "exec"]
     if interactive:
         docker_command.extend(["-it"])
+    elif tty:
+        docker_command.extend(["-t"])
     docker_command.extend([container_name, "bash", "-c", command])
     return run_command(docker_command, check=check, quiet=quiet)
 

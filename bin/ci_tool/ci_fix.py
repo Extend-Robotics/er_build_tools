@@ -359,7 +359,7 @@ def run_claude_streamed(container_name, prompt):
         f"-p '{escaped_prompt}' --verbose --output-format stream-json "
         f"2>{CLAUDE_STDERR_LOG} | ci_fix_display"
     )
-    docker_exec(container_name, claude_command, check=False)
+    docker_exec(container_name, claude_command, tty=True, check=False)
 
 
 def run_claude_resumed(container_name, session_id, prompt):
@@ -371,7 +371,7 @@ def run_claude_resumed(container_name, session_id, prompt):
         f"--verbose --output-format stream-json "
         f"2>{CLAUDE_STDERR_LOG} | ci_fix_display"
     )
-    docker_exec(container_name, claude_command, check=False)
+    docker_exec(container_name, claude_command, tty=True, check=False)
 
 
 def prompt_user_for_feedback():
