@@ -18,11 +18,18 @@ from ci_tool.claude_setup import (
     copy_ci_context,
     copy_claude_credentials,
     copy_display_script,
+    copy_learnings_from_container,
+    copy_learnings_to_container,
     inject_rerun_tests_function,
     inject_resume_function,
     is_claude_installed_in_container,
     save_package_list,
     setup_claude_in_container,
+)
+from ci_tool.ci_reproduce import (
+    _parse_repo_url,
+    prompt_for_reproduce_args,
+    reproduce_ci,
 )
 from ci_tool.containers import (
     container_exists,
@@ -34,7 +41,6 @@ from ci_tool.containers import (
     sanitize_container_name,
     start_container,
 )
-from ci_tool.ci_reproduce import prompt_for_reproduce_args, reproduce_ci
 from ci_tool.preflight import run_all_preflight_checks, PreflightError
 
 console = Console()
@@ -505,6 +511,27 @@ def drop_to_shell(container_name):
     docker_exec_interactive(container_name)
 
 
+def _read_container_env(container_name, var_name):
+    """Read an environment variable from a running container."""
+    result = subprocess.run(
+        ["docker", "exec", container_name, "printenv", var_name],
+        capture_output=True, text=True, check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _resolve_org_repo(session, container_name):
+    """Resolve (org, repo_name) from session info or container env vars."""
+    repo_url = session.get("repo_url")
+    if repo_url:
+        org, repo_name, _ = _parse_repo_url(repo_url)
+        return org, repo_name
+
+    org = _read_container_env(container_name, "ORG")
+    repo_name = _read_container_env(container_name, "REPO_NAME")
+    return org, repo_name
+
+
 def fix_ci(_args):
     """Main fix workflow: gather -> preflight -> reproduce -> Claude -> shell.
 
@@ -548,6 +575,11 @@ def fix_ci(_args):
     else:
         setup_claude_in_container(container_name)
 
+    # Step 4b: Copy learnings into container
+    org, repo_name = _resolve_org_repo(session, container_name)
+    if org and repo_name:
+        copy_learnings_to_container(container_name, org, repo_name)
+
     # Step 5: Run Claude
     resume_session_id = session.get("resume_session_id")
     if resume_session_id:
@@ -573,5 +605,9 @@ def fix_ci(_args):
             container_name, session.get("ci_run_info")
         )
 
-    # Step 6: Drop to shell
+    # Step 6: Save learnings from container back to host
+    if org and repo_name:
+        copy_learnings_from_container(container_name, org, repo_name)
+
+    # Step 7: Drop to shell
     drop_to_shell(container_name)

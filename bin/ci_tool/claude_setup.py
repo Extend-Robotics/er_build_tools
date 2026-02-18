@@ -10,9 +10,12 @@ from pathlib import Path
 
 from rich.console import Console
 
-from ci_tool.containers import docker_exec, docker_cp_to_container
+from ci_tool.containers import docker_exec, docker_cp_to_container, run_command
 
 console = Console()
+
+LEARNINGS_HOST_DIR = Path.home() / ".ci_tool" / "learnings"
+LEARNINGS_CONTAINER_PATH = "/ros_ws/.ci_learnings.md"
 
 CLAUDE_HOME = Path.home() / ".claude"
 CI_CONTEXT_DIR = Path(__file__).parent / "ci_context"
@@ -237,6 +240,38 @@ def copy_claude_memory(container_name):
                 container_name,
                 f"{container_memory_path}/{memory_file.name}",
             )
+
+
+def _learnings_host_path(org, repo_name):
+    """Return the host path for a repo's learnings file."""
+    return LEARNINGS_HOST_DIR / f"{org}_{repo_name}.md"
+
+
+def copy_learnings_to_container(container_name, org, repo_name):
+    """Copy repo-specific learnings file into the container (if it exists)."""
+    host_path = _learnings_host_path(org, repo_name)
+    if not host_path.exists():
+        return
+    console.print("[cyan]Copying CI learnings into container...[/cyan]")
+    docker_cp_to_container(str(host_path), container_name, LEARNINGS_CONTAINER_PATH)
+
+
+def copy_learnings_from_container(container_name, org, repo_name):
+    """Copy learnings file back from container to host (if Claude updated it)."""
+    result = subprocess.run(
+        ["docker", "exec", container_name, "test", "-s", LEARNINGS_CONTAINER_PATH],
+        check=False,
+    )
+    if result.returncode != 0:
+        return
+
+    host_path = _learnings_host_path(org, repo_name)
+    host_path.parent.mkdir(parents=True, exist_ok=True)
+    run_command(
+        ["docker", "cp", f"{container_name}:{LEARNINGS_CONTAINER_PATH}", str(host_path)],
+        quiet=True,
+    )
+    console.print(f"[green]Learnings saved to {host_path}[/green]")
 
 
 def copy_helper_bash_functions(container_name):

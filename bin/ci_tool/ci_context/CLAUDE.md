@@ -100,6 +100,19 @@ ROS Noetic catkin workspace for multi-robot assemblies:
 
 Configuration pipeline: Assembly configs → robot configs → Jinja2 templates → URDF/SRDF/controllers. Generated files output to `/tmp/`.
 
+## Learnings
+
+If `/ros_ws/.ci_learnings.md` exists, read it before starting — it contains lessons from
+previous CI fix sessions for this repo.
+
+After fixing CI failures, update `/ros_ws/.ci_learnings.md` with any new insights:
+- Root causes that were non-obvious
+- Patterns that recur (e.g. "this repo often breaks because of X")
+- Debugging techniques that saved time
+- False leads to avoid next time
+
+Keep it concise. This file persists across sessions.
+
 ## Design Principles
 
 - Explicit over implicit. Use named fields with clear values, not absence-of-key or empty-dict semantics.
