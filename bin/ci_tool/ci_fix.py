@@ -2,7 +2,10 @@
 """Fix CI test failures using Claude Code inside a container."""
 from __future__ import annotations
 
+import json
+import os
 import sys
+from urllib.request import Request, urlopen
 
 from InquirerPy import inquirer
 from rich.console import Console
@@ -15,10 +18,17 @@ from ci_tool.containers import (
     container_is_running,
     docker_exec,
     docker_exec_interactive,
+    list_ci_containers,
     remove_container,
+    rename_container,
+    sanitize_container_name,
     start_container,
 )
-from ci_tool.ci_reproduce import reproduce_ci, extract_repo_url_from_args
+from ci_tool.ci_reproduce import (
+    reproduce_ci,
+    extract_branch_from_args,
+    extract_repo_url_from_args,
+)
 from ci_tool.preflight import run_all_preflight_checks, PreflightError
 
 console = Console()
@@ -53,16 +63,19 @@ FIX_FROM_LOG_PROMPT = (
 
 CI_RUN_COMPARE_PROMPT_TEMPLATE = (
     ROS_SOURCE_PREAMBLE
-    + "A GitHub Actions CI run is available at: {ci_run_url}\n"
-    "Use `gh run view {run_id} --log-failed` or `gh run view {run_id} --log` "
-    "to fetch the CI logs.\n\n"
-    "There is a discrepancy between local and CI test results. Your job:\n"
-    "1. Run the tests locally and capture the results\n"
-    "2. Fetch the CI run logs using the gh CLI\n"
-    "3. Compare the two - identify tests that pass locally but fail in CI, or vice versa\n"
-    "4. Investigate the root cause of any discrepancy (environment differences, "
-    "timing, missing deps, etc.)\n"
-    "5. Fix the issue and verify locally\n\n"
+    + "Investigate CI failure: {ci_run_url}\n\n"
+    "1. Verify local and CI are on the same commit:\n"
+    "   - Local: check HEAD in the repo under /ros_ws/src/\n"
+    "   - CI: `gh api repos/{owner_repo}/actions/runs/{run_id} --jq '.head_sha'`\n"
+    "   - If they differ, determine whether the missing/extra commits explain the failure\n\n"
+    "2. Fetch CI logs: `gh run view {run_id} --log-failed` "
+    "(use `--log` for full output if needed)\n\n"
+    "3. Run the same tests locally and compare:\n"
+    "   - Both fail identically: fix the underlying bug\n"
+    "   - CI fails but local passes: investigate environment differences "
+    "(timing, deps, config)\n"
+    "   - Local fails but CI passes: check for local setup issues\n\n"
+    "4. Fix the root cause and re-run tests to verify\n\n"
     + SUMMARY_FORMAT
 )
 
@@ -89,6 +102,34 @@ def extract_run_id_from_url(ci_run_url):
     return run_id
 
 
+def extract_info_from_ci_url(ci_run_url):
+    """Extract repo URL, branch, and run ID from a GitHub Actions run URL via the API."""
+    run_id = extract_run_id_from_url(ci_run_url)
+
+    owner_repo = ci_run_url.split("github.com/")[1].split("/actions/")[0]
+    repo_url = f"https://github.com/{owner_repo}"
+
+    token = os.environ.get("GH_TOKEN") or os.environ.get("ER_SETUP_TOKEN")
+    if not token:
+        raise ValueError("No GitHub token found (GH_TOKEN or ER_SETUP_TOKEN)")
+
+    api_url = f"https://api.github.com/repos/{owner_repo}/actions/runs/{run_id}"
+    request = Request(api_url, headers={
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+    })
+    with urlopen(request) as response:
+        data = json.loads(response.read())
+
+    return {
+        "repo_url": repo_url,
+        "owner_repo": owner_repo,
+        "branch": data["head_branch"],
+        "run_id": run_id,
+        "ci_run_url": ci_run_url,
+    }
+
+
 def select_fix_mode():
     """Let the user choose how Claude should fix CI failures."""
     mode = inquirer.select(
@@ -106,8 +147,8 @@ def select_fix_mode():
             validate=lambda url: "/runs/" in url,
             invalid_message="URL must contain /runs/ (e.g. https://github.com/org/repo/actions/runs/12345)",
         ).execute()
-        run_id = extract_run_id_from_url(ci_run_url)
-        return CI_RUN_COMPARE_PROMPT_TEMPLATE.format(ci_run_url=ci_run_url, run_id=run_id)
+        ci_run_info = extract_info_from_ci_url(ci_run_url)
+        return CI_RUN_COMPARE_PROMPT_TEMPLATE.format(**ci_run_info)
 
     return inquirer.text(message="Enter your custom prompt for Claude:").execute()
 
@@ -131,14 +172,93 @@ def parse_fix_args(args):
     return parsed
 
 
+def prompt_for_session_name(branch_hint=None):
+    """Ask the user for a session name. Returns full container name (er_ci_<name>)."""
+    default = sanitize_container_name(branch_hint) if branch_hint else ""
+    name = inquirer.text(
+        message="Session name (used for container naming):",
+        default=default,
+        validate=lambda n: len(n.strip()) > 0,
+        invalid_message="Session name cannot be empty",
+    ).execute().strip()
+
+    container_name = f"er_ci_{sanitize_container_name(name)}"
+
+    if container_exists(container_name):
+        console.print(
+            f"[red]Container '{container_name}' already exists. "
+            f"Choose a different name or clean up first.[/red]"
+        )
+        sys.exit(1)
+
+    return container_name
+
+
+def select_or_create_session(parsed):
+    """Let user resume an existing session or start a new one.
+
+    Returns (container_name, ci_run_info, needs_reproduce).
+    Mutates parsed["reproduce_args"] if CI URL is provided.
+    """
+    existing = list_ci_containers()
+
+    if existing:
+        choices = [{"name": "Start new session", "value": "_new"}]
+        for container in existing:
+            choices.append({
+                "name": f"Resume '{container['name']}' ({container['status']})",
+                "value": container["name"],
+            })
+
+        selection = inquirer.select(
+            message="Select a session:",
+            choices=choices,
+        ).execute()
+
+        if selection != "_new":
+            if not container_is_running(selection):
+                start_container(selection)
+            return selection, None, False
+
+    # New session: ask for optional CI URL
+    ci_run_info = None
+    ci_run_url = inquirer.text(
+        message="GitHub Actions run URL (leave blank to skip):",
+        default="",
+    ).execute().strip()
+
+    if ci_run_url:
+        ci_run_info = extract_info_from_ci_url(ci_run_url)
+        console.print(f"  [green]Repo:[/green] {ci_run_info['repo_url']}")
+        console.print(f"  [green]Branch:[/green] {ci_run_info['branch']}")
+        console.print(f"  [green]Run ID:[/green] {ci_run_info['run_id']}")
+        parsed["reproduce_args"] = [
+            "-r", ci_run_info["repo_url"],
+            "-b", ci_run_info["branch"],
+            "--only-needed-deps",
+        ]
+
+    branch_hint = ci_run_info["branch"] if ci_run_info else None
+    container_name = prompt_for_session_name(branch_hint)
+    return container_name, ci_run_info, True
+
+
 def fix_ci(args):
-    """Main fix workflow: preflight -> ensure container -> install Claude -> run -> drop to shell."""
+    """Main fix workflow: session select -> preflight -> reproduce -> Claude -> shell."""
     parsed = parse_fix_args(args)
-    container_name = parsed["container_name"]
 
     console.print(Panel("[bold cyan]CI Fix with Claude[/bold cyan]", expand=False))
 
-    # Step 0: Preflight checks
+    # Step 0: Session selection
+    ci_run_info = None
+    if parsed["reproduce_args"]:
+        branch_hint = extract_branch_from_args(parsed["reproduce_args"])
+        container_name = prompt_for_session_name(branch_hint)
+        needs_reproduce = True
+    else:
+        container_name, ci_run_info, needs_reproduce = select_or_create_session(parsed)
+
+    # Step 1: Preflight checks
     repo_url = extract_repo_url_from_args(parsed["reproduce_args"])
     try:
         run_all_preflight_checks(repo_url=repo_url)
@@ -146,57 +266,34 @@ def fix_ci(args):
         console.print(f"\n[bold red]Preflight failed:[/bold red] {error}")
         sys.exit(1)
 
-    # Step 1: Ensure container exists
-    needs_reproduce = False
-
-    if container_exists(container_name):
-        if container_is_running(container_name):
-            action = inquirer.select(
-                message=f"Container '{container_name}' is running. What to do?",
-                choices=[
-                    {"name": "Use existing container (skip CI reproduction)", "value": "reuse"},
-                    {"name": "Remove and recreate from scratch", "value": "recreate"},
-                    {"name": "Cancel", "value": "cancel"},
-                ],
-            ).execute()
-        else:
-            action = inquirer.select(
-                message=f"Container '{container_name}' exists but is stopped.",
-                choices=[
-                    {"name": "Start and reuse it", "value": "reuse"},
-                    {"name": "Remove and recreate from scratch", "value": "recreate"},
-                    {"name": "Cancel", "value": "cancel"},
-                ],
-            ).execute()
-
-        if action == "cancel":
-            return
-        if action == "recreate":
-            remove_container(container_name)
-            needs_reproduce = True
-        elif action == "reuse":
-            if not container_is_running(container_name):
-                start_container(container_name)
-    else:
-        needs_reproduce = True
-
+    # Step 2: Reproduce CI in container
     if needs_reproduce:
+        if container_exists(DEFAULT_CONTAINER_NAME):
+            remove_container(DEFAULT_CONTAINER_NAME)
         reproduce_ci(parsed["reproduce_args"], skip_preflight=True)
+        if container_name != DEFAULT_CONTAINER_NAME:
+            rename_container(DEFAULT_CONTAINER_NAME, container_name)
 
-    # Step 2: Install Claude in container
+    # Step 3: Install Claude in container
     setup_claude_in_container(container_name)
 
-    # Step 3: Select fix mode and launch Claude
-    prompt = select_fix_mode()
+    # Step 4: Select fix mode and launch Claude
+    if ci_run_info:
+        prompt = CI_RUN_COMPARE_PROMPT_TEMPLATE.format(**ci_run_info)
+    else:
+        prompt = select_fix_mode()
 
     console.print("\n[bold cyan]Launching Claude Code...[/bold cyan]")
     console.print("[dim]Claude will attempt to fix CI failures autonomously[/dim]\n")
 
     escaped_prompt = prompt.replace("'", "'\\''")
-    claude_command = f"cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions -p '{escaped_prompt}'"
+    claude_command = (
+        f"cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions "
+        f"-p '{escaped_prompt}'"
+    )
     docker_exec(container_name, claude_command, check=False)
 
-    # Step 4: Drop into interactive shell
+    # Step 5: Drop into interactive shell
     console.print("\n[bold green]Claude has finished.[/bold green]")
     console.print("[cyan]Dropping you into the container shell.[/cyan]")
     console.print("[dim]You can run 'git diff', 'git add', 'git commit' etc.[/dim]")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -55,6 +56,35 @@ def remove_container(container_name=DEFAULT_CONTAINER_NAME):
     """Force remove a container."""
     run_command(["docker", "rm", "-f", container_name])
     console.print(f"[green]Container '{container_name}' removed[/green]")
+
+
+def list_ci_containers():
+    """List all CI containers (er_ci_* prefix) with their status."""
+    result = subprocess.run(
+        ["docker", "ps", "-a", "--filter", "name=er_ci_",
+         "--format", "{{.Names}}\t{{.Status}}"],
+        capture_output=True, text=True, check=False,
+    )
+    if not result.stdout.strip():
+        return []
+    containers = []
+    for line in result.stdout.strip().split("\n"):
+        parts = line.split("\t")
+        containers.append({
+            "name": parts[0],
+            "status": parts[1] if len(parts) > 1 else "unknown",
+        })
+    return containers
+
+
+def rename_container(old_name, new_name):
+    """Rename a Docker container."""
+    run_command(["docker", "rename", old_name, new_name])
+
+
+def sanitize_container_name(name):
+    """Replace characters invalid for Docker container names with underscores."""
+    return re.sub(r'[^a-zA-Z0-9_.-]', '_', name)
 
 
 def docker_exec(container_name, command, interactive=False, check=True, quiet=False):

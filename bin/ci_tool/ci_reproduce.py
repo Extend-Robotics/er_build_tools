@@ -30,6 +30,14 @@ def extract_repo_url_from_args(args):
     return None
 
 
+def extract_branch_from_args(args):
+    """Extract --branch/-b value from args list, or return None."""
+    for i, arg in enumerate(args):
+        if arg in ("--branch", "-b") and i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
 def prompt_for_reproduce_args():
     """Interactively ask user for the required reproduce arguments."""
     repo_url = inquirer.text(
