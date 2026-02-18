@@ -19,6 +19,8 @@ from ci_tool.claude_setup import (
     copy_ci_context,
     copy_display_script,
     inject_resume_function,
+    inject_rerun_tests_function,
+    save_package_list,
 )
 from ci_tool.containers import (
     DEFAULT_CONTAINER_NAME,
@@ -58,32 +60,36 @@ ROS_SOURCE_PREAMBLE = (
     "`source /opt/ros/noetic/setup.bash && source /ros_ws/install/setup.bash`.\n\n"
 )
 
-FIX_FROM_LOG_PROMPT = (
+ANALYSIS_PROMPT_TEMPLATE = (
     ROS_SOURCE_PREAMBLE
-    + "The CI tests have already been run. Your job:\n"
-    "1. Examine the test output in /ros_ws/test_output.log to identify failures\n"
-    "2. Find and fix the root cause in the source code under /ros_ws/src/\n"
-    "3. Rebuild the affected packages\n"
-    "4. Re-run the failing tests to verify your fix\n"
-    "5. Iterate until all tests pass\n\n"
-    + SUMMARY_FORMAT
+    + "The CI tests have already been run. Analyse the failures:\n"
+    "1. Examine the test output in /ros_ws/test_output.log\n"
+    "2. For each failing test, report:\n"
+    "   - Package and test name\n"
+    "   - The error/assertion message\n"
+    "   - Your hypothesis for the root cause\n"
+    "3. Suggest a fix strategy for each failure\n\n"
+    "Do NOT make any code changes. Only analyse and report.\n"
+    "{extra_context}"
 )
 
-CI_RUN_COMPARE_PROMPT_TEMPLATE = (
-    ROS_SOURCE_PREAMBLE
-    + "Investigate CI failure: {ci_run_url}\n\n"
-    "1. Verify local and CI are on the same commit:\n"
-    "   - Local: check HEAD in the repo under /ros_ws/src/\n"
-    "   - CI: `gh api repos/{owner_repo}/actions/runs/{run_id} --jq '.head_sha'`\n"
-    "   - If they differ, determine whether the missing/extra commits explain the failure\n\n"
-    "2. Fetch CI logs: `gh run view {run_id} --log-failed` "
-    "(use `--log` for full output if needed)\n\n"
-    "3. Run the same tests locally and compare:\n"
-    "   - Both fail identically: fix the underlying bug\n"
-    "   - CI fails but local passes: investigate environment differences "
-    "(timing, deps, config)\n"
-    "   - Local fails but CI passes: check for local setup issues\n\n"
-    "4. Fix the root cause and re-run tests to verify\n\n"
+CI_COMPARE_EXTRA_CONTEXT_TEMPLATE = (
+    "\nAlso investigate the CI run: {ci_run_url}\n"
+    "- Verify local and CI are on the same commit:\n"
+    "  - Local: check HEAD in the repo under /ros_ws/src/\n"
+    "  - CI: `gh api repos/{owner_repo}/actions/runs/{run_id} --jq '.head_sha'`\n"
+    "  - If they differ, determine whether the missing/extra commits explain the failure\n"
+    "- Fetch CI logs: `gh run view {run_id} --log-failed` "
+    "(use `--log` for full output if needed)\n"
+    "- Compare CI failures with local test results\n"
+)
+
+FIX_PROMPT_TEMPLATE = (
+    "The user has reviewed your analysis. Their feedback:\n"
+    "{user_feedback}\n\n"
+    "Now fix the CI failures based on this understanding.\n"
+    "Rebuild the affected packages and re-run the failing tests to verify.\n"
+    "Iterate until all tests pass.\n\n"
     + SUMMARY_FORMAT
 )
 
@@ -153,7 +159,10 @@ def extract_info_from_ci_url(ci_run_url):
 
 
 def select_fix_mode():
-    """Let the user choose how Claude should fix CI failures."""
+    """Let the user choose how Claude should fix CI failures.
+
+    Returns (ci_run_info_or_none, custom_prompt_or_none).
+    """
     mode = inquirer.select(
         message="How should Claude fix CI?",
         choices=FIX_MODE_CHOICES,
@@ -161,7 +170,7 @@ def select_fix_mode():
     ).execute()
 
     if mode == "fix_from_log":
-        return FIX_FROM_LOG_PROMPT
+        return None, None
 
     if mode == "compare_ci_run":
         ci_run_url = inquirer.text(
@@ -169,10 +178,10 @@ def select_fix_mode():
             validate=lambda url: "/runs/" in url,
             invalid_message="URL must contain /runs/ (e.g. https://github.com/org/repo/actions/runs/12345)",
         ).execute()
-        ci_run_info = extract_info_from_ci_url(ci_run_url)
-        return CI_RUN_COMPARE_PROMPT_TEMPLATE.format(**ci_run_info)
+        return extract_info_from_ci_url(ci_run_url), None
 
-    return inquirer.text(message="Enter your custom prompt for Claude:").execute()
+    custom_prompt = inquirer.text(message="Enter your custom prompt for Claude:").execute()
+    return None, custom_prompt
 
 
 def parse_fix_args(args):
@@ -273,6 +282,48 @@ def select_or_create_session(parsed):
     return container_name, ci_run_info, True, None
 
 
+def build_analysis_prompt(ci_run_info):
+    """Build the analysis prompt, optionally including CI compare context."""
+    if ci_run_info:
+        extra_context = CI_COMPARE_EXTRA_CONTEXT_TEMPLATE.format(**ci_run_info)
+    else:
+        extra_context = ""
+    return ANALYSIS_PROMPT_TEMPLATE.format(extra_context=extra_context)
+
+
+def run_claude_streamed(container_name, prompt):
+    """Run Claude non-interactively with stream-json output piped to ci_fix_display."""
+    escaped_prompt = prompt.replace("'", "'\\''")
+    claude_command = (
+        f"cd /ros_ws && claude --dangerously-skip-permissions "
+        f"-p '{escaped_prompt}' --output-format stream-json "
+        f"2>/dev/null | ci_fix_display"
+    )
+    docker_exec(container_name, claude_command, check=False)
+
+
+def run_claude_resumed(container_name, session_id, prompt):
+    """Resume a Claude session with a new prompt, streaming output."""
+    escaped_prompt = prompt.replace("'", "'\\''")
+    claude_command = (
+        f"cd /ros_ws && claude --dangerously-skip-permissions "
+        f"--resume '{session_id}' -p '{escaped_prompt}' --output-format stream-json "
+        f"2>/dev/null | ci_fix_display"
+    )
+    docker_exec(container_name, claude_command, check=False)
+
+
+def prompt_user_for_feedback():
+    """Ask the user to review Claude's analysis and provide corrections."""
+    feedback = inquirer.text(
+        message="Review the analysis above. Provide corrections or context (Enter to accept as-is):",
+        default="",
+    ).execute().strip()
+    if not feedback:
+        return "Analysis looks correct, proceed with fixing."
+    return feedback
+
+
 def fix_ci(args):
     """Main fix workflow: session select -> preflight -> reproduce -> Claude -> shell."""
     parsed = parse_fix_args(args)
@@ -304,6 +355,7 @@ def fix_ci(args):
         reproduce_ci(parsed["reproduce_args"], skip_preflight=True)
         if container_name != DEFAULT_CONTAINER_NAME:
             rename_container(DEFAULT_CONTAINER_NAME, container_name)
+        save_package_list(container_name)
 
     # Step 3: Setup Claude in container (idempotent — skips if already installed)
     if is_claude_installed_in_container(container_name):
@@ -312,6 +364,7 @@ def fix_ci(args):
         copy_ci_context(container_name)
         copy_display_script(container_name)
         inject_resume_function(container_name)
+        inject_rerun_tests_function(container_name)
     else:
         setup_claude_in_container(container_name)
 
@@ -325,23 +378,40 @@ def fix_ci(args):
             interactive=True, check=False,
         )
     else:
-        # Step 4: Select fix mode and launch Claude
+        # Step 4: Determine fix mode
         if ci_run_info:
-            prompt = CI_RUN_COMPARE_PROMPT_TEMPLATE.format(**ci_run_info)
+            custom_prompt = None
         else:
-            prompt = select_fix_mode()
+            ci_run_info, custom_prompt = select_fix_mode()
 
-        console.print("\n[bold cyan]Launching Claude Code...[/bold cyan]")
-        console.print("[dim]Claude will attempt to fix CI failures autonomously[/dim]")
-        console.print("[dim]Progress will be displayed below[/dim]\n")
+        if custom_prompt:
+            # Custom prompt: single-shot, no analysis phase
+            console.print("\n[bold cyan]Launching Claude Code (custom prompt)...[/bold cyan]")
+            run_claude_streamed(container_name, custom_prompt)
+        else:
+            # Step 4a: Analysis phase
+            analysis_prompt = build_analysis_prompt(ci_run_info)
+            console.print("\n[bold cyan]Launching Claude Code — analysis phase...[/bold cyan]")
+            console.print("[dim]Claude will analyse failures before attempting fixes[/dim]\n")
+            run_claude_streamed(container_name, analysis_prompt)
 
-        escaped_prompt = prompt.replace("'", "'\\''")
-        claude_command = (
-            f"cd /ros_ws && claude --dangerously-skip-permissions "
-            f"-p '{escaped_prompt}' --output-format stream-json "
-            f"2>/dev/null | ci_fix_display"
-        )
-        docker_exec(container_name, claude_command, check=False)
+            # Step 4b: User review
+            console.print()
+            user_feedback = prompt_user_for_feedback()
+
+            # Step 4c: Fix phase (resume session)
+            state = read_container_state(container_name)
+            session_id = state["session_id"] if state else None
+            if session_id:
+                console.print("\n[bold cyan]Resuming Claude — fix phase...[/bold cyan]")
+                console.print("[dim]Claude will now fix the failures[/dim]\n")
+                fix_prompt = FIX_PROMPT_TEMPLATE.format(user_feedback=user_feedback)
+                run_claude_resumed(container_name, session_id, fix_prompt)
+            else:
+                console.print(
+                    "\n[yellow]No session ID from analysis phase — "
+                    "cannot resume. Dropping to shell.[/yellow]"
+                )
 
         # Step 4.5: Show outcome
         state = read_container_state(container_name)
@@ -358,9 +428,10 @@ def fix_ci(args):
     # Step 5: Drop into container shell (both paths converge here)
     console.print("\n[bold green]Dropping into container shell.[/bold green]")
     console.print("[cyan]Useful commands:[/cyan]")
+    console.print("  [bold]rerun_tests[/bold]    — rebuild and re-run CI tests locally")
     console.print("  [bold]resume_claude[/bold]  — resume the Claude session interactively")
     console.print("  [bold]git diff[/bold]        — review changes")
     console.print("  [bold]git add && git commit[/bold] — commit fixes")
-    console.print(f"  [dim]Repo is at /ros_ws/src/<repo_name>[/dim]\n")
+    console.print("  [dim]Repo is at /ros_ws/src/<repo_name>[/dim]\n")
 
     docker_exec_interactive(container_name)

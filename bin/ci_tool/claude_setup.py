@@ -119,6 +119,25 @@ def copy_display_script(container_name):
     docker_exec(container_name, "chmod +x /usr/local/bin/ci_fix_display")
 
 
+RERUN_TESTS_FUNCTION = r'''
+rerun_tests() {
+    local packages_file="/ros_ws/.ci_packages"
+    if [ ! -f "$packages_file" ]; then
+        echo "No package list found at $packages_file"
+        return 1
+    fi
+    local packages
+    packages=$(tr '\n' ' ' < "$packages_file")
+    echo "Rebuilding and testing: ${packages}"
+    cd /ros_ws
+    colcon build --packages-select ${packages} --cmake-args -DSETUPTOOLS_DEB_LAYOUT=OFF
+    source /ros_ws/install/setup.bash
+    colcon test --packages-select ${packages}
+    colcon test-result --verbose
+}
+'''
+
+
 RESUME_CLAUDE_FUNCTION = r'''
 resume_claude() {
     local state_file="/ros_ws/.ci_fix_state.json"
@@ -154,6 +173,38 @@ def inject_resume_function(container_name):
         container_name,
         f"echo '{marker}' >> /root/.bashrc && cat >> /root/.bashrc << 'RESUME_EOF'\n"
         f"{RESUME_CLAUDE_FUNCTION}\nRESUME_EOF",
+        quiet=True,
+    )
+
+
+def save_package_list(container_name):
+    """Run colcon list in the container and save package names to /ros_ws/.ci_packages."""
+    console.print("[cyan]Saving workspace package list...[/cyan]")
+    result = docker_exec(
+        container_name,
+        "cd /ros_ws && colcon list --names-only > /ros_ws/.ci_packages",
+        check=False,
+        quiet=True,
+    )
+    if result.returncode != 0:
+        console.print("[yellow]Could not save package list (colcon list failed)[/yellow]")
+
+
+def inject_rerun_tests_function(container_name):
+    """Add rerun_tests bash function to the container's bashrc."""
+    console.print("[cyan]Injecting rerun_tests function...[/cyan]")
+    marker = "# ci_fix rerun_tests"
+    check_command = f"grep -q '{marker}' /root/.bashrc"
+    already_present = docker_exec(
+        container_name, check_command, check=False, quiet=True,
+    )
+    if already_present.returncode == 0:
+        return
+
+    docker_exec(
+        container_name,
+        f"echo '{marker}' >> /root/.bashrc && cat >> /root/.bashrc << 'RERUN_EOF'\n"
+        f"{RERUN_TESTS_FUNCTION}\nRERUN_EOF",
         quiet=True,
     )
 
@@ -280,6 +331,7 @@ def setup_claude_in_container(container_name):
     copy_ci_context(container_name)
     copy_display_script(container_name)
     inject_resume_function(container_name)
+    inject_rerun_tests_function(container_name)
     copy_claude_memory(container_name)
     copy_helper_bash_functions(container_name)
     configure_git_in_container(container_name)
