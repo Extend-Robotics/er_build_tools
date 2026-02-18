@@ -2,10 +2,11 @@
 """Display human-readable progress from Claude Code stream-json output.
 
 Reads newline-delimited JSON from stdin (Claude's --output-format stream-json),
-shows a live spinner + assistant text + tool activity via rich, captures the
-session_id, and writes a state file on exit.
+shows assistant text + tool activity via rich, captures the session_id, and
+writes a state file on exit.
 
-Designed to run INSIDE a CI container. Requires: rich (from requirements.txt).
+Designed to run INSIDE a CI container via docker exec (no TTY allocated).
+Requires: rich (from requirements.txt).
 """
 from __future__ import annotations
 
@@ -16,14 +17,13 @@ import traceback
 from datetime import datetime, timezone
 
 from rich.console import Console
-from rich.live import Live
-from rich.spinner import Spinner
-from rich.text import Text
 
 STATE_FILE = "/ros_ws/.ci_fix_state.json"
 CLAUDE_STDERR_LOG = "/ros_ws/.claude_stderr.log"
 
-console = Console(stderr=True)
+# force_terminal=True is required because docker exec without -t
+# doesn't allocate a PTY, so Rich would otherwise suppress all ANSI output.
+console = Console(stderr=True, force_terminal=True)
 
 
 def write_state(session_id, phase, attempt_count=1):
@@ -57,95 +57,88 @@ def format_elapsed(start_time):
     return f"{seconds}s"
 
 
-def main():
-    """Read stream-json from stdin, display progress, write state on exit."""
-    session_id = None
-    attempt_count = read_existing_attempt_count() + 1
-    phase = "fixing"
-    start_time = time.time()
-    current_activity = "Starting up"
+def handle_event(event, start_time):
+    """Handle a single stream-json event. Returns session_id if found, else None."""
+    session_id = event.get("session_id") or None
 
-    try:
-        with Live(
-            Spinner("dots", text=Text(f" {current_activity}...", style="cyan")),
-            console=console,
-            refresh_per_second=10,
-            transient=True,
-        ) as live:
-            for line in sys.stdin:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+    # Unwrap nested event wrapper if present
+    inner = event.get("event", event)
+    event_type = inner.get("type", "")
 
-                if "session_id" in event and event["session_id"]:
-                    session_id = event["session_id"]
+    if event_type == "content_block_start":
+        block = inner.get("content_block", {})
+        if block.get("type") == "tool_use":
+            tool_name = block.get("name", "unknown")
+            console.print(
+                f"  [dim]tool:[/dim] [bold]{tool_name}[/bold] "
+                f"[dim][{format_elapsed(start_time)}][/dim]"
+            )
 
-                inner = event.get("event", event)
-                event_type = inner.get("type", "")
+    elif event_type == "content_block_delta":
+        delta = inner.get("delta", {})
+        if delta.get("type") == "text_delta":
+            sys.stderr.write(delta.get("text", ""))
+            sys.stderr.flush()
 
-                if event_type == "content_block_start":
-                    block = inner.get("content_block", {})
-                    if block.get("type") == "tool_use":
-                        tool_name = block.get("name", "unknown")
-                        current_activity = f"Using {tool_name}"
-                        live.update(Spinner(
-                            "dots",
-                            text=Text(
-                                f" {current_activity}  "
-                                f"[{format_elapsed(start_time)}]",
-                                style="cyan",
-                            ),
-                        ))
-                        console.print(
-                            f"  [dim]tool:[/dim] [bold]{tool_name}[/bold]"
-                        )
+    return session_id
 
-                elif event_type == "content_block_delta":
-                    delta = inner.get("delta", {})
-                    if delta.get("type") == "text_delta":
-                        text = delta.get("text", "")
-                        console.file.write(text)
-                        console.file.flush()
-                        current_activity = "Thinking"
-                        live.update(Spinner(
-                            "dots",
-                            text=Text(
-                                f" {current_activity}  "
-                                f"[{format_elapsed(start_time)}]",
-                                style="cyan",
-                            ),
-                        ))
 
-        phase = "completed"
-
-    except KeyboardInterrupt:
-        phase = "interrupted"
-    except Exception:
-        console.print(f"\n[red]Display processor error:[/red]\n{traceback.format_exc()}")
-        phase = "stuck"
-
-    write_state(session_id, phase, attempt_count)
-
+def print_session_summary(session_id, start_time):
+    """Print the final session summary after stream ends."""
     elapsed = format_elapsed(start_time)
     if session_id:
         console.print(
             f"\n[green]Session saved ({session_id}). "
             f"Elapsed: {elapsed}. Use 'resume_claude' to continue.[/green]"
         )
-    else:
-        console.print(f"\n[yellow]No session ID captured. Elapsed: {elapsed}.[/yellow]")
-        try:
-            with open(CLAUDE_STDERR_LOG, encoding="utf-8") as stderr_log:
-                stderr_content = stderr_log.read().strip()
-            if stderr_content:
-                console.print("[yellow]Claude stderr output:[/yellow]")
-                console.print(stderr_content)
-        except FileNotFoundError:
-            pass
+        return
+
+    console.print(f"\n[yellow]No session ID captured. Elapsed: {elapsed}.[/yellow]")
+    try:
+        with open(CLAUDE_STDERR_LOG, encoding="utf-8") as stderr_log:
+            stderr_content = stderr_log.read().strip()
+        if stderr_content:
+            console.print("[yellow]Claude stderr output:[/yellow]")
+            console.print(stderr_content)
+    except FileNotFoundError:
+        pass
+
+
+def main():
+    """Read stream-json from stdin, display progress, write state on exit."""
+    session_id = None
+    attempt_count = read_existing_attempt_count() + 1
+    phase = "fixing"
+    start_time = time.time()
+
+    try:
+        console.print("[cyan]  Working...[/cyan]")
+
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            event_session_id = handle_event(event, start_time)
+            if event_session_id:
+                session_id = event_session_id
+
+        phase = "completed"
+
+    except KeyboardInterrupt:
+        phase = "interrupted"
+    except Exception:  # pylint: disable=broad-except
+        console.print(
+            f"\n[red]Display processor error:[/red]\n{traceback.format_exc()}"
+        )
+        phase = "stuck"
+
+    write_state(session_id, phase, attempt_count)
+    print_session_summary(session_id, start_time)
 
 
 if __name__ == "__main__":
