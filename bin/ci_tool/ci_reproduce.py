@@ -132,14 +132,20 @@ def reproduce_ci(args, skip_preflight=False):
         capture_output=True, text=True, check=True,
     )
 
-    result = subprocess.run(
-        ["bash", "-c", fetch_result.stdout + '\n"$@"', "--"] + full_args,
-        check=False,
-    )
-
-    if result.returncode != 0:
-        console.print(
-            f"\n[yellow]CI reproduction exited with code {result.returncode} "
-            f"(expected — tests likely failed)[/yellow]"
+    try:
+        result = subprocess.run(
+            ["bash", "-c", fetch_result.stdout + '\n"$@"', "--"] + full_args,
+            check=False,
         )
+    except KeyboardInterrupt:
+        console.print(
+            "\n[yellow]Interrupted — continuing with whatever test output "
+            "was captured[/yellow]"
+        )
+    else:
+        if result.returncode != 0:
+            console.print(
+                f"\n[yellow]CI reproduction exited with code {result.returncode} "
+                f"(expected — tests likely failed)[/yellow]"
+            )
     console.print(f"\n[green]Container '{container_name}' is ready[/green]")
