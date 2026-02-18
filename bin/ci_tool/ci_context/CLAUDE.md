@@ -3,6 +3,12 @@
 You are inside a CI reproduction container. The ROS workspace is at `/ros_ws/`.
 Source code is under `/ros_ws/src/`. Built packages install to `/ros_ws/install/`.
 
+## Token Efficiency
+
+Use Grep to search log files for relevant errors — never read entire log files.
+When examining test output, search for FAILURE, FAILED, ERROR, or assertion messages.
+Pipe long command output through `tail -200` or `grep` to avoid dumping huge logs.
+
 ## Environment Setup
 
 ```bash

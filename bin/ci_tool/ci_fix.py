@@ -60,7 +60,8 @@ ROS_SOURCE_PREAMBLE = (
 ANALYSIS_PROMPT_TEMPLATE = (
     ROS_SOURCE_PREAMBLE
     + "The CI tests have already been run. Analyse the failures:\n"
-    "1. Examine the test output in /ros_ws/test_output.log\n"
+    "1. Use Grep to search /ros_ws/test_output.log for FAILURE, FAILED, ERROR, "
+    "and assertion messages. Do NOT read the entire file.\n"
     "2. For each failing test, report:\n"
     "   - Package and test name\n"
     "   - The error/assertion message\n"
@@ -78,8 +79,8 @@ CI_COMPARE_EXTRA_CONTEXT_TEMPLATE = (
     " --jq '.head_sha'`\n"
     "  - If they differ, determine whether the missing/extra commits "
     "explain the failure\n"
-    "- Fetch CI logs: `gh run view {run_id} --log-failed` "
-    "(use `--log` for full output if needed)\n"
+    "- Fetch CI logs: `gh run view {run_id} --log-failed 2>&1 | tail -200` "
+    "(increase if needed, but avoid dumping full logs)\n"
     "- Compare CI failures with local test results\n"
 )
 
