@@ -318,6 +318,16 @@ def is_claude_installed_in_container(container_name):
     return result.returncode == 0
 
 
+def set_sandbox_env(container_name):
+    """Set IS_SANDBOX=1 so Claude allows --dangerously-skip-permissions as root."""
+    docker_exec(
+        container_name,
+        "grep -q 'export IS_SANDBOX=1' /root/.bashrc "
+        "|| echo 'export IS_SANDBOX=1' >> /root/.bashrc",
+        quiet=True,
+    )
+
+
 def setup_claude_in_container(container_name):
     """Full setup: install Claude Code and copy all config into container."""
     console.print("\n[bold cyan]Setting up Claude in container...[/bold cyan]")
@@ -332,6 +342,7 @@ def setup_claude_in_container(container_name):
     copy_display_script(container_name)
     inject_resume_function(container_name)
     inject_rerun_tests_function(container_name)
+    set_sandbox_env(container_name)
     copy_claude_memory(container_name)
     copy_helper_bash_functions(container_name)
     configure_git_in_container(container_name)

@@ -296,7 +296,7 @@ def run_claude_streamed(container_name, prompt):
     """Run Claude non-interactively with stream-json output piped to ci_fix_display."""
     escaped_prompt = prompt.replace("'", "'\\''")
     claude_command = (
-        f"cd /ros_ws && claude --dangerously-skip-permissions "
+        f"cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions "
         f"-p '{escaped_prompt}' --output-format stream-json "
         f"2>{CLAUDE_STDERR_LOG} | ci_fix_display"
     )
@@ -307,7 +307,7 @@ def run_claude_resumed(container_name, session_id, prompt):
     """Resume a Claude session with a new prompt, streaming output."""
     escaped_prompt = prompt.replace("'", "'\\''")
     claude_command = (
-        f"cd /ros_ws && claude --dangerously-skip-permissions "
+        f"cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions "
         f"--resume '{session_id}' -p '{escaped_prompt}' --output-format stream-json "
         f"2>{CLAUDE_STDERR_LOG} | ci_fix_display"
     )
@@ -374,7 +374,7 @@ def fix_ci(args):
         console.print("[dim]You are now in an interactive Claude session[/dim]\n")
         docker_exec(
             container_name,
-            f'cd /ros_ws && claude --dangerously-skip-permissions --resume "{resume_session_id}"',
+            f'cd /ros_ws && IS_SANDBOX=1 claude --dangerously-skip-permissions --resume "{resume_session_id}"',
             interactive=True, check=False,
         )
     else:
