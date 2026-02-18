@@ -191,6 +191,7 @@ def prompt_for_session_name(branch_hint=None):
     ).execute().strip()
 
     container_name = f"er_ci_{sanitize_container_name(name)}"
+    console.print(f"  Container name: [cyan]{container_name}[/cyan]")
 
     if container_exists(container_name):
         console.print(
