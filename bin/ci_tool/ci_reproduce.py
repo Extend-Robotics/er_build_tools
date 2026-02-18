@@ -15,10 +15,7 @@ from rich.panel import Panel
 from ci_tool.containers import (
     DEFAULT_CONTAINER_NAME,
     container_exists,
-    container_is_running,
-    remove_container,
     run_command,
-    start_container,
 )
 
 console = Console()
@@ -92,7 +89,9 @@ def _validate_deps_repos_reachable(org, repo_name, branch, gh_token, deps_file="
             hints.insert(1, f"Branch/commit '{branch}' may not exist in '{org}/{repo_name}'")
         raise RuntimeError("\n  ".join(hints)) from error
     except URLError as error:
-        raise RuntimeError(f"Cannot reach GitHub to validate {deps_file}: {error.reason}") from error
+        raise RuntimeError(
+            f"Cannot reach GitHub to validate {deps_file}: {error.reason}"
+        ) from error
 
     console.print(f"  [green]\u2713[/green] Validation passed (HTTP {http_code})")
 
@@ -102,7 +101,10 @@ def _fetch_internal_scripts(gh_token, scripts_branch):
 
     Returns (setup_script_path, retest_script_path) as temporary file paths on the host.
     """
-    console.print(f"  Fetching CI scripts from [cyan]{INTERNAL_REPO}[/cyan] branch [cyan]{scripts_branch}[/cyan]")
+    console.print(
+        f"  Fetching CI scripts from [cyan]{INTERNAL_REPO}[/cyan] "
+        f"branch [cyan]{scripts_branch}[/cyan]"
+    )
 
     setup_content = _fetch_github_raw_file(
         INTERNAL_REPO, "bin/ci_workspace_setup.sh", scripts_branch, gh_token,
@@ -215,10 +217,10 @@ def _docker_exec_workspace_setup(container_name):
         )
 
 
-def prompt_for_reproduce_args():
-    """Interactively ask user for the required reproduce arguments.
+def prompt_for_repo_and_branch():
+    """Ask user for repository URL and branch name interactively.
 
-    Returns (repo_url, branch, only_needed_deps) tuple.
+    Returns (repo_url, branch) tuple.
     """
     repo_url = inquirer.text(
         message="Repository URL:",
@@ -232,16 +234,25 @@ def prompt_for_reproduce_args():
         invalid_message="Branch name cannot be empty",
     ).execute()
 
-    build_everything = inquirer.confirm(
+    return repo_url, branch
+
+
+def prompt_for_reproduce_args():
+    """Interactively ask user for the required reproduce arguments.
+
+    Returns (repo_url, branch, only_needed_deps) tuple.
+    """
+    repo_url, branch = prompt_for_repo_and_branch()
+
+    only_needed_deps = not inquirer.confirm(
         message="Build everything (slower, disable --only-needed-deps)?",
         default=False,
     ).execute()
 
-    only_needed_deps = not build_everything
     return repo_url, branch, only_needed_deps
 
 
-def reproduce_ci(
+def reproduce_ci(  # pylint: disable=too-many-arguments
     repo_url,
     branch,
     container_name=DEFAULT_CONTAINER_NAME,
@@ -266,27 +277,6 @@ def reproduce_ci(
         )
 
     console.print(Panel("[bold cyan]Reproduce CI[/bold cyan]", expand=False))
-
-    # Handle existing container
-    if container_exists(container_name):
-        action = inquirer.select(
-            message=f"Container '{container_name}' already exists. What to do?",
-            choices=[
-                {"name": "Remove and recreate", "value": "recreate"},
-                {"name": "Keep existing (skip creation)", "value": "keep"},
-                {"name": "Cancel", "value": "cancel"},
-            ],
-        ).execute()
-
-        if action == "cancel":
-            return
-        if action == "recreate":
-            remove_container(container_name)
-        if action == "keep":
-            if not container_is_running(container_name):
-                start_container(container_name)
-            console.print(f"[green]\u2713 Using existing container '{container_name}'[/green]")
-            return
 
     # Parse repo URL
     org, repo_name, clean_repo_url = _parse_repo_url(repo_url)

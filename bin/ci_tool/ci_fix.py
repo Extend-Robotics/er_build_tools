@@ -32,7 +32,7 @@ from ci_tool.containers import (
     sanitize_container_name,
     start_container,
 )
-from ci_tool.ci_reproduce import reproduce_ci
+from ci_tool.ci_reproduce import prompt_for_reproduce_args, reproduce_ci
 from ci_tool.preflight import run_all_preflight_checks, PreflightError
 
 console = Console()
@@ -274,23 +274,12 @@ def gather_session_info():
         console.print(f"  [green]Repo:[/green] {repo_url}")
         console.print(f"  [green]Branch:[/green] {branch}")
         console.print(f"  [green]Run ID:[/green] {ci_run_info['run_id']}")
+        only_needed_deps = not inquirer.confirm(
+            message="Build everything (slower, disable --only-needed-deps)?",
+            default=False,
+        ).execute()
     else:
-        repo_url = inquirer.text(
-            message="Repository URL:",
-            validate=lambda url: url.startswith("https://github.com/"),
-            invalid_message="Must be a GitHub URL (https://github.com/...)",
-        ).execute()
-
-        branch = inquirer.text(
-            message="Branch name:",
-            validate=lambda b: len(b.strip()) > 0,
-            invalid_message="Branch name cannot be empty",
-        ).execute()
-
-    only_needed_deps = not inquirer.confirm(
-        message="Build everything (slower, disable --only-needed-deps)?",
-        default=False,
-    ).execute()
+        repo_url, branch, only_needed_deps = prompt_for_reproduce_args()
 
     container_name = prompt_for_session_name(branch)
 

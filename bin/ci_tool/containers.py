@@ -130,7 +130,7 @@ def retest_in_container(args):
 def clean_containers(_args):
     """Clean up CI containers."""
     require_docker()
-    from InquirerPy import inquirer
+    from InquirerPy import inquirer  # pylint: disable=import-outside-toplevel
 
     result = subprocess.run(
         ["docker", "ps", "-a", "--filter", "name=er_ci_", "--format", "{{.Names}}\t{{.Status}}"],

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Interactive CLI menu for CI tool."""
+# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import sys
@@ -59,20 +60,44 @@ def dispatch_subcommand(command, args):
     handler(args)
 
 
-def _handle_reproduce(_args):
-    import os
-    from ci_tool.ci_reproduce import reproduce_ci, prompt_for_reproduce_args
+def _handle_container_collision(container_name):
+    """Handle an existing container: recreate, keep, or cancel.
+
+    Returns True if reproduce should proceed, False to skip.
+    """
     from ci_tool.containers import (
-        DEFAULT_CONTAINER_NAME,
-        container_exists,
         container_is_running,
         remove_container,
+        start_container,
     )
-    from ci_tool.preflight import (
-        validate_docker_available,
-        validate_gh_token,
-        PreflightError,
+
+    action = inquirer.select(
+        message=f"Container '{container_name}' already exists. What to do?",
+        choices=[
+            {"name": "Remove and recreate", "value": "recreate"},
+            {"name": "Keep existing (skip creation)", "value": "keep"},
+            {"name": "Cancel", "value": "cancel"},
+        ],
+    ).execute()
+
+    if action == "cancel":
+        return False
+    if action == "recreate":
+        remove_container(container_name)
+        return True
+    # action == "keep"
+    if not container_is_running(container_name):
+        start_container(container_name)
+    console.print(
+        f"[green]Using existing container '{container_name}'[/green]"
     )
+    return False
+
+
+def _handle_reproduce(_args):
+    from ci_tool.ci_reproduce import reproduce_ci, prompt_for_reproduce_args
+    from ci_tool.containers import DEFAULT_CONTAINER_NAME, container_exists
+    from ci_tool.preflight import validate_docker_available, validate_gh_token, PreflightError
 
     try:
         validate_docker_available()
@@ -84,29 +109,7 @@ def _handle_reproduce(_args):
     container_name = DEFAULT_CONTAINER_NAME
 
     if container_exists(container_name):
-        action = inquirer.select(
-            message=f"Container '{container_name}' already exists. What to do?",
-            choices=[
-                {"name": "Remove and recreate", "value": "recreate"},
-                {"name": "Keep existing (skip creation)", "value": "keep"},
-                {"name": "Cancel", "value": "cancel"},
-            ],
-        ).execute()
-
-        if action == "cancel":
-            return
-        if action == "recreate":
-            remove_container(container_name)
-        if action == "keep":
-            if not container_is_running(container_name):
-                import subprocess
-                subprocess.run(
-                    ["docker", "start", container_name], check=True
-                )
-            console.print(
-                f"[green]Using existing container "
-                f"'{container_name}'[/green]"
-            )
+        if not _handle_container_collision(container_name):
             return
 
     try:
