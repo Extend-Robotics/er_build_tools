@@ -4,6 +4,9 @@
 
 - [ ] If branch name is empty/blank, default to the repo's default branch instead of requiring input
 
+## Style
+- [x] ~~Render markdown in terminal~~ — display_progress.py now buffers text between tool calls and renders via `rich.markdown.Markdown` (tables, headers, code blocks, bold/italic)
+
 ## Testing
 
 - [ ] Add unit tests for each module, leveraging the clean separation of concerns:

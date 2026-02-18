@@ -25,6 +25,7 @@ import traceback
 from datetime import datetime, timezone
 
 from rich.console import Console
+from rich.markdown import Markdown
 
 STATE_FILE = "/ros_ws/.ci_fix_state.json"
 CLAUDE_STDERR_LOG = "/ros_ws/.claude_stderr.log"
@@ -69,7 +70,17 @@ def format_elapsed(start_time):
     return f"{seconds}s"
 
 
-def handle_assistant_event(message, start_time):
+def flush_text_buffer(text_buffer):
+    """Render accumulated text as rich markdown and clear the buffer."""
+    if not text_buffer:
+        return
+    combined = "".join(text_buffer)
+    text_buffer.clear()
+    if combined.strip():
+        console.print(Markdown(combined))
+
+
+def handle_assistant_event(message, start_time, text_buffer):
     """Display content blocks from an assistant message event."""
     for block in message.get("content", []):
         block_type = block.get("type", "")
@@ -77,10 +88,10 @@ def handle_assistant_event(message, start_time):
         if block_type == "text":
             text = block.get("text", "")
             if text:
-                sys.stderr.write(text)
-                sys.stderr.flush()
+                text_buffer.append(text)
 
         elif block_type == "tool_use":
+            flush_text_buffer(text_buffer)
             tool_name = block.get("name", "unknown")
             console.print(
                 f"\n  [dim]tool:[/dim] [bold]{tool_name}[/bold] "
@@ -88,16 +99,17 @@ def handle_assistant_event(message, start_time):
             )
 
 
-def handle_event(event, start_time):
+def handle_event(event, start_time, text_buffer):
     """Handle a single stream-json event. Returns session_id if found, else None."""
     session_id = event.get("session_id") or None
     event_type = event.get("type", "")
 
     if event_type == "assistant":
         message = event.get("message", {})
-        handle_assistant_event(message, start_time)
+        handle_assistant_event(message, start_time, text_buffer)
 
     elif event_type == "tool_result":
+        flush_text_buffer(text_buffer)
         console.print(
             f"  [dim]done[/dim] [{format_elapsed(start_time)}]"
         )
@@ -132,6 +144,7 @@ def main():
     attempt_count = read_existing_attempt_count() + 1
     phase = "fixing"
     start_time = time.time()
+    text_buffer = []
 
     try:
         console.print("[cyan]  Working...[/cyan]")
@@ -151,10 +164,11 @@ def main():
                     sys.stderr.write(f"  {line}\n")
                     continue
 
-                event_session_id = handle_event(event, start_time)
+                event_session_id = handle_event(event, start_time, text_buffer)
                 if event_session_id:
                     session_id = event_session_id
 
+        flush_text_buffer(text_buffer)
         phase = "completed"
 
     except KeyboardInterrupt:
