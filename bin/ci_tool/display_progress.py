@@ -20,6 +20,7 @@ from rich.console import Console
 
 STATE_FILE = "/ros_ws/.ci_fix_state.json"
 CLAUDE_STDERR_LOG = "/ros_ws/.claude_stderr.log"
+EVENT_DEBUG_LOG = "/ros_ws/.ci_fix_events.jsonl"
 
 # force_terminal=True is required because docker exec without -t
 # doesn't allocate a PTY, so Rich would otherwise suppress all ANSI output.
@@ -114,18 +115,23 @@ def main():
     try:
         console.print("[cyan]  Working...[/cyan]")
 
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        with open(EVENT_DEBUG_LOG, "w", encoding="utf-8") as debug_log:
+            for line in sys.stdin:
+                line = line.strip()
+                if not line:
+                    continue
 
-            event_session_id = handle_event(event, start_time)
-            if event_session_id:
-                session_id = event_session_id
+                debug_log.write(line + "\n")
+                debug_log.flush()
+
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                event_session_id = handle_event(event, start_time)
+                if event_session_id:
+                    session_id = event_session_id
 
         phase = "completed"
 
