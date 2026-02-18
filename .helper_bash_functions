@@ -262,7 +262,7 @@ ci_tool() {
         fi
         echo -e "${Yellow}Warning: Failed to fetch latest ci_tool, using cached version${Color_Off}"
     fi
-    python3 "${CI_TOOL_CACHE_DIR}/ci_tool" "$@"
+    CI_TOOL_SCRIPTS_BRANCH="${THIS_SCRIPT_BRANCH}" python3 "${CI_TOOL_CACHE_DIR}/ci_tool" "$@"
 }
 ci_fix() { ci_tool fix "$@"; }
 
