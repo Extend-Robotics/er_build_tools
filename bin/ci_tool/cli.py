@@ -59,9 +59,69 @@ def dispatch_subcommand(command, args):
     handler(args)
 
 
-def _handle_reproduce(args):
-    from ci_tool.ci_reproduce import reproduce_ci
-    reproduce_ci(args)
+def _handle_reproduce(_args):
+    import os
+    from ci_tool.ci_reproduce import reproduce_ci, prompt_for_reproduce_args
+    from ci_tool.containers import (
+        DEFAULT_CONTAINER_NAME,
+        container_exists,
+        container_is_running,
+        remove_container,
+    )
+    from ci_tool.preflight import (
+        validate_docker_available,
+        validate_gh_token,
+        PreflightError,
+    )
+
+    try:
+        validate_docker_available()
+    except PreflightError as error:
+        console.print(f"\n[bold red]Preflight failed:[/bold red] {error}")
+        sys.exit(1)
+
+    repo_url, branch, only_needed_deps = prompt_for_reproduce_args()
+    container_name = DEFAULT_CONTAINER_NAME
+
+    if container_exists(container_name):
+        action = inquirer.select(
+            message=f"Container '{container_name}' already exists. What to do?",
+            choices=[
+                {"name": "Remove and recreate", "value": "recreate"},
+                {"name": "Keep existing (skip creation)", "value": "keep"},
+                {"name": "Cancel", "value": "cancel"},
+            ],
+        ).execute()
+
+        if action == "cancel":
+            return
+        if action == "recreate":
+            remove_container(container_name)
+        if action == "keep":
+            if not container_is_running(container_name):
+                import subprocess
+                subprocess.run(
+                    ["docker", "start", container_name], check=True
+                )
+            console.print(
+                f"[green]Using existing container "
+                f"'{container_name}'[/green]"
+            )
+            return
+
+    try:
+        gh_token = validate_gh_token(repo_url=repo_url)
+    except PreflightError as error:
+        console.print(f"\n[bold red]Preflight failed:[/bold red] {error}")
+        sys.exit(1)
+
+    reproduce_ci(
+        repo_url=repo_url,
+        branch=branch,
+        container_name=container_name,
+        gh_token=gh_token,
+        only_needed_deps=only_needed_deps,
+    )
 
 
 def _handle_fix(args):
