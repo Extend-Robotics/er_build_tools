@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Reproduce CI locally by creating a Docker container with Python Docker orchestration."""
+# pylint: disable=duplicate-code  # shared imports with ci_fix.py
 from __future__ import annotations
 
 import os
@@ -21,7 +22,7 @@ from ci_tool.containers import (
 console = Console()
 
 DEFAULT_DOCKER_IMAGE = "rostooling/setup-ros-docker:ubuntu-focal-ros-noetic-desktop-latest"
-DEFAULT_SCRIPTS_BRANCH = "ERD-1633_reproduce_ci_locally"
+DEFAULT_SCRIPTS_BRANCH = "main"
 INTERNAL_REPO = "Extend-Robotics/er_build_tools_internal"
 CONTAINER_SETUP_SCRIPT_PATH = "/tmp/ci_workspace_setup.sh"
 CONTAINER_RETEST_SCRIPT_PATH = "/tmp/ci_repull_and_retest.sh"
@@ -36,8 +37,11 @@ def _parse_repo_url(repo_url):
         raise ValueError(
             f"URL must start with https://github.com/, got: {repo_url}"
         )
-    clean_url = repo_url.rstrip("/").removesuffix(".git")
-    repo_path = clean_url.removeprefix("https://github.com/")
+    clean_url = repo_url.rstrip("/")
+    if clean_url.endswith(".git"):
+        clean_url = clean_url[:-4]
+    github_prefix = "https://github.com/"
+    repo_path = clean_url[len(github_prefix):]
     parts = repo_path.split("/")
     if len(parts) != 2 or not all(parts):
         raise ValueError(f"Cannot parse org/repo from URL: {repo_url}")

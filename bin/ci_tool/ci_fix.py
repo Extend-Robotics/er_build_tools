@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Fix CI test failures using Claude Code inside a container."""
+# pylint: disable=duplicate-code  # shared imports with ci_reproduce.py
 from __future__ import annotations
 
 import json
 import os
 import subprocess
 import sys
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from InquirerPy import inquirer
@@ -134,6 +136,9 @@ def extract_info_from_ci_url(ci_run_url):
     """Extract repo URL, branch, and run ID from a GitHub Actions URL."""
     run_id = extract_run_id_from_url(ci_run_url)
 
+    if "github.com/" not in ci_run_url or "/actions/" not in ci_run_url:
+        raise ValueError(f"Not a valid GitHub Actions URL: {ci_run_url}")
+
     owner_repo = ci_run_url.split("github.com/")[1].split("/actions/")[0]
     repo_url = f"https://github.com/{owner_repo}"
 
@@ -150,8 +155,18 @@ def extract_info_from_ci_url(ci_run_url):
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3+json",
     })
-    with urlopen(request) as response:
-        data = json.loads(response.read())
+    try:
+        with urlopen(request, timeout=15) as response:
+            data = json.loads(response.read())
+    except HTTPError as error:
+        raise RuntimeError(
+            f"Failed to fetch run info for {owner_repo} "
+            f"run {run_id} (HTTP {error.code})"
+        ) from error
+    except URLError as error:
+        raise RuntimeError(
+            f"Cannot reach GitHub API: {error.reason}"
+        ) from error
 
     return {
         "repo_url": repo_url,
