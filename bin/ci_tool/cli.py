@@ -13,6 +13,7 @@ console = Console()
 MENU_CHOICES = [
     {"name": "Reproduce CI (create container)", "value": "reproduce"},
     {"name": "Fix CI with Claude", "value": "fix"},
+    {"name": "Claude session (interactive)", "value": "claude"},
     {"name": "Shell into container", "value": "shell"},
     {"name": "Re-run tests in container", "value": "retest"},
     {"name": "Clean up containers", "value": "clean"},
@@ -45,6 +46,7 @@ def dispatch_subcommand(command, args):
     handlers = {
         "reproduce": _handle_reproduce,
         "fix": _handle_fix,
+        "claude": _handle_claude,
         "shell": _handle_shell,
         "retest": _handle_retest,
         "clean": _handle_clean,
@@ -65,6 +67,11 @@ def _handle_reproduce(args):
 def _handle_fix(args):
     from ci_tool.ci_fix import fix_ci
     fix_ci(args)
+
+
+def _handle_claude(args):
+    from ci_tool.claude_session import claude_session
+    claude_session(args)
 
 
 def _handle_shell(args):

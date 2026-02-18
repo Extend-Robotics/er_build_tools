@@ -210,7 +210,8 @@ remove_ci_container() {
 # CI tool (Python CLI) - interactive CI reproduction + Claude-powered fix
 CI_TOOL_CACHE_DIR="${HOME}/.ci_tool"
 CI_TOOL_RAW_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/bin/ci_tool"
-CI_TOOL_FILES="__init__.py __main__.py cli.py preflight.py containers.py ci_reproduce.py claude_setup.py ci_fix.py requirements.txt"
+CI_TOOL_FILES="__init__.py __main__.py cli.py preflight.py containers.py ci_reproduce.py claude_setup.py ci_fix.py claude_session.py requirements.txt"
+CI_TOOL_DATA_FILES="ci_context/CLAUDE.md"
 
 install_ci_tool() {
     echo -e "${Yellow}Installing ci_tool from er_build_tools (branch: ${THIS_SCRIPT_BRANCH})...${Color_Off}"
@@ -218,6 +219,14 @@ install_ci_tool() {
     local failed="false"
     for file in ${CI_TOOL_FILES}; do
         echo "  Fetching ${file}..."
+        if ! curl -fSL "${CI_TOOL_RAW_URL}/${file}" -o "${CI_TOOL_CACHE_DIR}/ci_tool/${file}"; then
+            echo -e "${Red}  Failed to fetch ${file}${Color_Off}"
+            failed="true"
+        fi
+    done
+    for file in ${CI_TOOL_DATA_FILES}; do
+        echo "  Fetching ${file}..."
+        mkdir -p "${CI_TOOL_CACHE_DIR}/ci_tool/$(dirname "${file}")"
         if ! curl -fSL "${CI_TOOL_RAW_URL}/${file}" -o "${CI_TOOL_CACHE_DIR}/ci_tool/${file}"; then
             echo -e "${Red}  Failed to fetch ${file}${Color_Off}"
             failed="true"
@@ -236,6 +245,12 @@ ci_tool() {
     mkdir -p "${CI_TOOL_CACHE_DIR}/ci_tool"
     local fetch_failed="false"
     for file in ${CI_TOOL_FILES}; do
+        if ! curl -fsSL "${CI_TOOL_RAW_URL}/${file}" -o "${CI_TOOL_CACHE_DIR}/ci_tool/${file}" 2>/dev/null; then
+            fetch_failed="true"
+        fi
+    done
+    for file in ${CI_TOOL_DATA_FILES}; do
+        mkdir -p "${CI_TOOL_CACHE_DIR}/ci_tool/$(dirname "${file}")" 2>/dev/null
         if ! curl -fsSL "${CI_TOOL_RAW_URL}/${file}" -o "${CI_TOOL_CACHE_DIR}/ci_tool/${file}" 2>/dev/null; then
             fetch_failed="true"
         fi

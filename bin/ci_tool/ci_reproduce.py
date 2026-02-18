@@ -132,9 +132,14 @@ def reproduce_ci(args, skip_preflight=False):
         capture_output=True, text=True, check=True,
     )
 
-    subprocess.run(
+    result = subprocess.run(
         ["bash", "-c", fetch_result.stdout + '\n"$@"', "--"] + full_args,
-        check=True,
+        check=False,
     )
 
+    if result.returncode != 0:
+        console.print(
+            f"\n[yellow]CI reproduction exited with code {result.returncode} "
+            f"(expected — tests likely failed)[/yellow]"
+        )
     console.print(f"\n[green]Container '{container_name}' is ready[/green]")

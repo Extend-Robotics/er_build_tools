@@ -15,6 +15,7 @@ from ci_tool.containers import docker_exec, docker_cp_to_container
 console = Console()
 
 CLAUDE_HOME = Path.home() / ".claude"
+CI_CONTEXT_DIR = Path(__file__).parent / "ci_context"
 
 
 def install_node_in_container(container_name):
@@ -75,6 +76,18 @@ def copy_claude_config(container_name):
             docker_cp_to_container(tmp_path, container_name, "/root/.claude/settings.json")
         finally:
             os.unlink(tmp_path)
+
+
+def copy_ci_context(container_name):
+    """Copy CI-specific CLAUDE.md into the container, replacing the host's global CLAUDE.md."""
+    ci_claude_md = CI_CONTEXT_DIR / "CLAUDE.md"
+    if not ci_claude_md.exists():
+        console.print("[yellow]CI context CLAUDE.md not found, skipping[/yellow]")
+        return
+
+    console.print("[cyan]Copying CI context CLAUDE.md...[/cyan]")
+    docker_exec(container_name, "mkdir -p /root/.claude")
+    docker_cp_to_container(str(ci_claude_md), container_name, "/root/.claude/CLAUDE.md")
 
 
 def copy_claude_memory(container_name):
@@ -177,6 +190,15 @@ def install_and_auth_gh_cli(container_name, gh_token):
     )
 
 
+def is_claude_installed_in_container(container_name):
+    """Check if Claude Code is already installed in the container."""
+    result = subprocess.run(
+        ["docker", "exec", container_name, "bash", "-c", "which claude"],
+        capture_output=True, text=True, check=False,
+    )
+    return result.returncode == 0
+
+
 def setup_claude_in_container(container_name):
     """Full setup: install Claude Code and copy all config into container."""
     console.print("\n[bold cyan]Setting up Claude in container...[/bold cyan]")
@@ -186,6 +208,7 @@ def setup_claude_in_container(container_name):
     install_fzf_in_container(container_name)
     copy_claude_credentials(container_name)
     copy_claude_config(container_name)
+    copy_ci_context(container_name)
     copy_claude_memory(container_name)
     copy_helper_bash_functions(container_name)
     configure_git_in_container(container_name)

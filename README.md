@@ -2,6 +2,77 @@
 
 Public build tools and utilities for Extend Robotics repositories.
 
+## Quick Setup
+
+Install helper bash functions, set your GitHub token, and authenticate Claude — all in one command:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/setup.sh)
+```
+
+This installs `~/.helper_bash_functions` which provides build helpers, git aliases, and `ci_tool`.
+
+## ci_tool — Fix CI Failures with Claude
+
+`ci_tool` is an interactive CLI that reproduces CI failures locally in Docker and uses Claude Code to autonomously fix them.
+
+### Prerequisites
+
+- **Docker** installed and running
+- **Claude Code** installed and authenticated — `npm install -g @anthropic-ai/claude-code && claude`
+- **GitHub token** with `repo` scope — [create one](https://github.com/settings/tokens)
+
+### Usage
+
+```bash
+source ~/.helper_bash_functions
+ci_tool
+```
+
+| Command | Description |
+|---------|-------------|
+| `ci_tool` | Interactive menu |
+| `ci_fix` | Fix CI failures with Claude (shortcut for `ci_tool fix`) |
+| `ci_tool reproduce` | Reproduce CI environment in Docker |
+| `ci_tool shell` | Shell into an existing CI container |
+| `ci_tool retest` | Re-run tests in a CI container |
+| `ci_tool clean` | Remove CI containers |
+
+### Fix Workflow
+
+1. Run `ci_fix`
+2. Create a new session or reuse an existing container
+3. Optionally paste a GitHub Actions URL to target a specific failure
+4. ci_tool reproduces the CI environment in Docker
+5. Claude analyses the test output and applies fixes
+6. You're dropped into a shell to review changes, commit, and push
+
+### Manual Setup
+
+If you prefer not to use the setup script:
+
+1. Download helper functions:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/.helper_bash_functions \
+     -o ~/.helper_bash_functions
+   ```
+2. Add your GitHub token to the top of `~/.helper_bash_functions`:
+   ```bash
+   export GH_TOKEN="ghp_your_token_here"
+   ```
+3. Source in your shell:
+   ```bash
+   echo 'source ~/.helper_bash_functions' >> ~/.bashrc
+   source ~/.helper_bash_functions
+   ```
+4. Install and authenticate Claude Code:
+   ```bash
+   npm install -g @anthropic-ai/claude-code
+   claude
+   ```
+
+---
+
 ## reproduce_ci.sh — Reproduce CI Locally
 
 When CI fails, debugging requires pushing commits and waiting for results. This script reproduces the exact CI environment locally in a persistent Docker container, so you can debug interactively.
