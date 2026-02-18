@@ -20,7 +20,6 @@ from ci_tool.containers import (
     run_command,
     start_container,
 )
-from ci_tool.preflight import validate_docker_available, validate_gh_token, PreflightError
 
 console = Console()
 
@@ -50,7 +49,7 @@ def _fetch_github_raw_file(repo, file_path, branch, gh_token):
     Returns the file content as a string.
     Raises RuntimeError if the file cannot be fetched.
     """
-    url = f"https://raw.githubusercontent.com/{repo}/refs/heads/{branch}/{file_path}"
+    url = f"https://raw.githubusercontent.com/{repo}/{branch}/{file_path}"
     request = Request(url, headers={"Authorization": f"token {gh_token}"})
     try:
         with urlopen(request, timeout=15) as response:
@@ -240,21 +239,15 @@ def reproduce_ci(
     only_needed_deps=True,
     scripts_branch=DEFAULT_SCRIPTS_BRANCH,
     graphical=True,
-    skip_preflight=False,
 ):
     """Create a CI reproduction container using direct Docker orchestration.
 
     Fetches container-side scripts from er_build_tools_internal, validates
     deps.repos is reachable, creates and starts a Docker container, then
     runs workspace setup inside it.
-    """
-    if not skip_preflight:
-        try:
-            validate_docker_available()
-            validate_gh_token(repo_url=repo_url)
-        except PreflightError as error:
-            raise RuntimeError(f"Preflight failed: {error}") from error
 
+    Callers are responsible for running preflight checks before calling this.
+    """
     if gh_token is None:
         gh_token = os.environ.get("GH_TOKEN") or os.environ.get("ER_SETUP_TOKEN") or ""
     if not gh_token:
@@ -298,15 +291,10 @@ def reproduce_ci(
         gh_token, scripts_branch,
     )
 
-    # Build graphical args
+    # Build graphical args (fail fast if DISPLAY not set)
     graphical_docker_args = []
     if graphical:
-        try:
-            graphical_docker_args = _build_graphical_docker_args()
-        except RuntimeError:
-            console.print(
-                "  [yellow]DISPLAY not set -- skipping graphical forwarding[/yellow]"
-            )
+        graphical_docker_args = _build_graphical_docker_args()
 
     # Environment variables for the container-side scripts
     container_env_vars = {
