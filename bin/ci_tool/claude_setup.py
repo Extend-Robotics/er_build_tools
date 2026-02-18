@@ -358,20 +358,46 @@ def install_gh_cli(container_name):
     console.print("[cyan]Installing gh CLI in container...[/cyan]")
     install_result = docker_exec(container_name, (
         "type gh >/dev/null 2>&1 || ("
-        "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg "
-        "| dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg "
+        "echo '  Downloading GPG key...' "
+        "&& curl -fSL --progress-bar -o /usr/share/keyrings/githubcli-archive-keyring.gpg "
+        "https://cli.github.com/packages/githubcli-archive-keyring.gpg "
         "&& chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg "
+        "&& echo '  Adding apt repository...' "
         '&& echo "deb [arch=$(dpkg --print-architecture) '
         "signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] "
         'https://cli.github.com/packages stable main" '
         "| tee /etc/apt/sources.list.d/github-cli-stable.list > /dev/null "
-        "&& apt-get update && apt-get install -y gh)"
+        "&& echo '  Running apt-get update...' "
+        "&& apt-get update "
+        "&& echo '  Installing gh...' "
+        "&& apt-get install -y gh)"
     ), check=False)
     if install_result.returncode != 0:
         console.print(
             "[yellow]gh CLI installation failed — "
             "Claude will not be able to interact with GitHub from inside the container[/yellow]"
         )
+
+
+def seed_claude_state(container_name):
+    """Pre-seed /root/.claude.json so the onboarding wizard is skipped."""
+    console.print("[cyan]Seeding Claude onboarding state...[/cyan]")
+    docker_exec(
+        container_name,
+        """python3 -c "
+import json, os
+path = '/root/.claude.json'
+data = {}
+if os.path.exists(path):
+    try:
+        data = json.load(open(path))
+    except (json.JSONDecodeError, OSError):
+        pass
+data['hasCompletedOnboarding'] = True
+json.dump(data, open(path, 'w'))
+" """,
+        quiet=True,
+    )
 
 
 def is_claude_installed_in_container(container_name):
@@ -389,6 +415,7 @@ def setup_claude_in_container(container_name):
 
     install_node_in_container(container_name)
     install_claude_in_container(container_name)
+    seed_claude_state(container_name)
     install_fzf_in_container(container_name)
     install_python_deps_in_container(container_name)
     copy_claude_credentials(container_name)

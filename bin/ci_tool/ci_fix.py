@@ -24,6 +24,7 @@ from ci_tool.claude_setup import (
     inject_resume_function,
     is_claude_installed_in_container,
     save_package_list,
+    seed_claude_state,
     setup_claude_in_container,
 )
 from ci_tool.ci_reproduce import (
@@ -421,6 +422,7 @@ def refresh_claude_config(container_name):
     copy_display_script(container_name)
     inject_resume_function(container_name)
     inject_rerun_tests_function(container_name)
+    seed_claude_state(container_name)
 
 
 def run_claude_workflow(container_name, ci_run_info):
@@ -450,7 +452,11 @@ def run_claude_workflow(container_name, ci_run_info):
 
         # User review
         console.print()
-        user_feedback = prompt_user_for_feedback()
+        try:
+            user_feedback = prompt_user_for_feedback()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Interrupted — skipping fix phase.[/yellow]")
+            return
 
         # Fix phase (resume session)
         state = read_container_state(container_name)
@@ -582,28 +588,31 @@ def fix_ci(_args):
 
     # Step 5: Run Claude
     resume_session_id = session.get("resume_session_id")
-    if resume_session_id:
-        console.print(
-            "\n[bold cyan]Resuming Claude session...[/bold cyan]"
-        )
-        console.print(
-            "[dim]You are now in an interactive Claude session[/dim]\n"
-        )
-        result = docker_exec(
-            container_name,
-            "cd /ros_ws && IS_SANDBOX=1 claude "
-            "--dangerously-skip-permissions "
-            f'--resume "{resume_session_id}"',
-            interactive=True, check=False,
-        )
-        if result.returncode != 0:
+    try:
+        if resume_session_id:
             console.print(
-                f"[yellow]Claude exited with code {result.returncode}[/yellow]"
+                "\n[bold cyan]Resuming Claude session...[/bold cyan]"
             )
-    else:
-        run_claude_workflow(
-            container_name, session.get("ci_run_info")
-        )
+            console.print(
+                "[dim]You are now in an interactive Claude session[/dim]\n"
+            )
+            result = docker_exec(
+                container_name,
+                "cd /ros_ws && IS_SANDBOX=1 claude "
+                "--dangerously-skip-permissions "
+                f'--resume "{resume_session_id}"',
+                interactive=True, check=False,
+            )
+            if result.returncode != 0:
+                console.print(
+                    f"[yellow]Claude exited with code {result.returncode}[/yellow]"
+                )
+        else:
+            run_claude_workflow(
+                container_name, session.get("ci_run_info")
+            )
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted.[/yellow]")
 
     # Step 6: Save learnings from container back to host
     if org and repo_name:

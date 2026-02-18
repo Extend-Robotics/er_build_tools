@@ -4,8 +4,14 @@
 
 - [ ] If branch name is empty/blank, default to the repo's default branch instead of requiring input
 
-## Style
+## Done
 - [x] ~~Render markdown in terminal~~ — display_progress.py now buffers text between tool calls and renders via `rich.markdown.Markdown` (tables, headers, code blocks, bold/italic)
+- [x] ~~Empty workspace after reproduce~~ — `_docker_exec_workspace_setup()` distinguishes setup failures from test failures; `wstool scrape` fixed in internal repo
+- [x] ~~Silent failures~~ — 21 issues audited and fixed across all modules
+- [x] ~~resume_claude auth~~ — `IS_SANDBOX=1` passed via `docker exec -e` on all calls (`.bashrc` not sourced by non-interactive shells)
+- [x] ~~gh CLI auth warning~~ — removed redundant `gh auth login` (GH_TOKEN env var handles auth)
+- [x] ~~Token efficiency~~ — prompts updated to use grep instead of reading full logs
+- [x] ~~Persistent learnings~~ — `~/.ci_tool/learnings/{org}_{repo}.md` persists between sessions
 
 ## Testing
 
