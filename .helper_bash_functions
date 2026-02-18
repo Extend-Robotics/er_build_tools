@@ -233,9 +233,19 @@ install_ci_tool() {
 update_ci_tool() { install_ci_tool; }
 
 ci_tool() {
-    if [ ! -d "${CI_TOOL_CACHE_DIR}/ci_tool" ]; then
-        echo -e "${Yellow}ci_tool not found locally. Installing...${Color_Off}"
-        install_ci_tool || return 1
+    mkdir -p "${CI_TOOL_CACHE_DIR}/ci_tool"
+    local fetch_failed="false"
+    for file in ${CI_TOOL_FILES}; do
+        if ! curl -fsSL "${CI_TOOL_RAW_URL}/${file}" -o "${CI_TOOL_CACHE_DIR}/ci_tool/${file}" 2>/dev/null; then
+            fetch_failed="true"
+        fi
+    done
+    if [ "${fetch_failed}" = "true" ]; then
+        if [ ! -f "${CI_TOOL_CACHE_DIR}/ci_tool/__main__.py" ]; then
+            echo -e "${Red}Error: Failed to fetch ci_tool and no cached version available${Color_Off}"
+            return 1
+        fi
+        echo -e "${Yellow}Warning: Failed to fetch latest ci_tool, using cached version${Color_Off}"
     fi
     python3 "${CI_TOOL_CACHE_DIR}/ci_tool" "$@"
 }
