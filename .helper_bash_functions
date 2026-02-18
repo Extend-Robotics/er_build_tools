@@ -227,11 +227,6 @@ install_ci_tool() {
         echo -e "${Red}Error: Failed to install ci_tool. Check network and branch '${THIS_SCRIPT_BRANCH}'.${Color_Off}"
         return 1
     fi
-    echo -e "${Yellow}Installing Python dependencies...${Color_Off}"
-    if ! pip3 install --user -r "${CI_TOOL_CACHE_DIR}/ci_tool/requirements.txt"; then
-        echo -e "${Red}Error: Failed to install Python dependencies${Color_Off}"
-        return 1
-    fi
     echo -e "${Green}ci_tool installed to ${CI_TOOL_CACHE_DIR}${Color_Off}"
 }
 
