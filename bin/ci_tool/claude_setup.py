@@ -87,7 +87,7 @@ def copy_claude_config(container_name):
         with open(settings_path, encoding="utf-8") as settings_file:
             settings = json.load(settings_file)
 
-        settings.setdefault("permissions", {})["defaultMode"] = "dangerouslySkipPermissions"
+        settings.setdefault("permissions", {})["defaultMode"] = "bypassPermissions"
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
             json.dump(settings, tmp, indent=2)
