@@ -23,8 +23,9 @@ console = Console()
 
 DEFAULT_DOCKER_IMAGE = "rostooling/setup-ros-docker:ubuntu-focal-ros-noetic-desktop-latest"
 DEFAULT_SCRIPTS_BRANCH = os.environ.get(
-    "CI_TOOL_SCRIPTS_BRANCH", "ERD-1633_reproduce_ci_locally"
+    "CI_TOOL_SCRIPTS_BRANCH", "ERD-1633_reproduce_ci_locally",
 )
+
 INTERNAL_REPO = "Extend-Robotics/er_build_tools_internal"
 CONTAINER_SETUP_SCRIPT_PATH = "/tmp/ci_workspace_setup.sh"
 CONTAINER_RETEST_SCRIPT_PATH = "/tmp/ci_repull_and_retest.sh"

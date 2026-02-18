@@ -32,7 +32,10 @@ colcon_test_these_packages() { THIS_DIR=$(pwd)
                                source install/setup.bash && \
                                colcon test --packages-select $1
                                for pkg in $1; do
-                                   colcon test-result --verbose --test-result-base "build/$pkg"
+                                   if ! colcon test-result --test-result-base "build/$pkg"; then
+                                       colcon test-result --verbose --test-result-base "build/$pkg" > "/tmp/colcon_test_verbose_${pkg}.log" 2>&1
+                                       echo -e "${Red}Verbose output saved to: /tmp/colcon_test_verbose_${pkg}.log${Color_Off}"
+                                   fi
                                done
                                cd $THIS_DIR
 
@@ -262,7 +265,7 @@ ci_tool() {
         fi
         echo -e "${Yellow}Warning: Failed to fetch latest ci_tool, using cached version${Color_Off}"
     fi
-    CI_TOOL_SCRIPTS_BRANCH="${THIS_SCRIPT_BRANCH}" python3 "${CI_TOOL_CACHE_DIR}/ci_tool" "$@"
+    python3 "${CI_TOOL_CACHE_DIR}/ci_tool" "$@"
 }
 ci_fix() { ci_tool fix "$@"; }
 
