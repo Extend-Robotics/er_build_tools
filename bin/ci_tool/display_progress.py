@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """Display human-readable progress from Claude Code stream-json output.
 
-Reads newline-delimited JSON from stdin (Claude's --output-format stream-json),
+Reads newline-delimited JSON from stdin (Claude Code's --output-format stream-json),
 shows assistant text + tool activity via rich, captures the session_id, and
 writes a state file on exit.
 
-Designed to run INSIDE a CI container via docker exec (no TTY allocated).
+Claude Code stream-json event types:
+  {"type":"system","subtype":"init","session_id":"..."}
+  {"type":"assistant","message":{"content":[{"type":"text","text":"..."},
+                                            {"type":"tool_use","name":"..."}]},
+   "session_id":"..."}
+  {"type":"tool_result","tool_use_id":"...","content":"...","session_id":"..."}
+  {"type":"result","subtype":"success","result":"...","session_id":"..."}
+
+Designed to run INSIDE a CI container via docker exec.
 Requires: rich (from requirements.txt).
 """
 from __future__ import annotations
@@ -22,8 +30,8 @@ STATE_FILE = "/ros_ws/.ci_fix_state.json"
 CLAUDE_STDERR_LOG = "/ros_ws/.claude_stderr.log"
 EVENT_DEBUG_LOG = "/ros_ws/.ci_fix_events.jsonl"
 
-# force_terminal=True is required because docker exec without -t
-# doesn't allocate a PTY, so Rich would otherwise suppress all ANSI output.
+# force_terminal=True is required because docker exec may not allocate a PTY,
+# which would cause Rich to suppress all ANSI output.
 console = Console(stderr=True, force_terminal=True)
 
 
@@ -58,28 +66,38 @@ def format_elapsed(start_time):
     return f"{seconds}s"
 
 
-def handle_event(event, start_time):
-    """Handle a single stream-json event. Returns session_id if found, else None."""
-    session_id = event.get("session_id") or None
+def handle_assistant_event(message, start_time):
+    """Display content blocks from an assistant message event."""
+    for block in message.get("content", []):
+        block_type = block.get("type", "")
 
-    # Unwrap nested event wrapper if present
-    inner = event.get("event", event)
-    event_type = inner.get("type", "")
+        if block_type == "text":
+            text = block.get("text", "")
+            if text:
+                sys.stderr.write(text)
+                sys.stderr.flush()
 
-    if event_type == "content_block_start":
-        block = inner.get("content_block", {})
-        if block.get("type") == "tool_use":
+        elif block_type == "tool_use":
             tool_name = block.get("name", "unknown")
             console.print(
-                f"  [dim]tool:[/dim] [bold]{tool_name}[/bold] "
+                f"\n  [dim]tool:[/dim] [bold]{tool_name}[/bold] "
                 f"[dim][{format_elapsed(start_time)}][/dim]"
             )
 
-    elif event_type == "content_block_delta":
-        delta = inner.get("delta", {})
-        if delta.get("type") == "text_delta":
-            sys.stderr.write(delta.get("text", ""))
-            sys.stderr.flush()
+
+def handle_event(event, start_time):
+    """Handle a single stream-json event. Returns session_id if found, else None."""
+    session_id = event.get("session_id") or None
+    event_type = event.get("type", "")
+
+    if event_type == "assistant":
+        message = event.get("message", {})
+        handle_assistant_event(message, start_time)
+
+    elif event_type == "tool_result":
+        console.print(
+            f"  [dim]done[/dim] [{format_elapsed(start_time)}]"
+        )
 
     return session_id
 
