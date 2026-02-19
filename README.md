@@ -29,14 +29,27 @@ source ~/.helper_bash_functions
 ci_tool
 ```
 
-| Command | Description |
-|---------|-------------|
-| `ci_tool` | Interactive menu |
-| `ci_fix` | Fix CI failures with Claude (shortcut for `ci_tool fix`) |
-| `ci_tool reproduce` | Reproduce CI environment in Docker |
-| `ci_tool shell` | Shell into an existing CI container |
-| `ci_tool retest` | Re-run tests in a CI container |
-| `ci_tool clean` | Remove CI containers |
+This opens an interactive menu. You can also run subcommands directly — see `ci_tool --help`:
+
+```
+$ ci_tool --help
+ci_tool — Fix CI failures with Claude
+
+Usage: ci_tool [command]
+
+Commands:
+  fix          Fix CI failures with Claude
+  reproduce    Reproduce CI environment in Docker
+  claude       Interactive Claude session in container
+  shell        Shell into an existing CI container
+  retest       Re-run tests in a CI container
+  clean        Remove CI containers
+
+Shortcuts:
+  ci_fix       Alias for 'ci_tool fix'
+
+Run without arguments for interactive menu.
+```
 
 ### Fix Workflow
 

@@ -21,10 +21,36 @@ MENU_CHOICES = [
     {"name": "Exit", "value": "exit"},
 ]
 
+HELP_TEXT = """\
+ci_tool — Fix CI failures with Claude
+
+Usage: ci_tool [command]
+
+Commands:
+  fix          Fix CI failures with Claude
+  reproduce    Reproduce CI environment in Docker
+  claude       Interactive Claude session in container
+  shell        Shell into an existing CI container
+  retest       Re-run tests in a CI container
+  clean        Remove CI containers
+
+Shortcuts:
+  ci_fix       Alias for 'ci_tool fix'
+
+Run without arguments for interactive menu."""
+
+
+def print_help():
+    """Print usage information."""
+    console.print(HELP_TEXT)
+
 
 def main():
     """Entry point - show menu or dispatch subcommand."""
     if len(sys.argv) > 1:
+        if sys.argv[1] in ("-h", "--help", "help"):
+            print_help()
+            return
         dispatch_subcommand(sys.argv[1], sys.argv[2:])
         return
 
