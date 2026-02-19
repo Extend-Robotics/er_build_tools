@@ -4,7 +4,7 @@ Public build tools and utilities for Extend Robotics repositories.
 
 ## Quick Setup
 
-Install helper bash functions, set your GitHub token, and authenticate Claude — all in one command:
+Install helper bash functions, set your GitHub token, and authenticate Claude:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/setup.sh)
@@ -12,15 +12,15 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_too
 
 This installs `~/.helper_bash_functions` which provides build helpers, git aliases, and `ci_tool`.
 
-## ci_tool — Fix CI Failures with Claude
+## ci_tool: Fix CI Failures with Claude
 
-`ci_tool` is an interactive CLI that reproduces CI failures locally in Docker and uses Claude Code to autonomously fix them.
+`ci_tool` is an interactive CLI that reproduces CI failures locally in Docker and uses Claude Code to fix them.
 
 ### Prerequisites
 
 - **Docker** installed and running
-- **Claude Code** installed and authenticated — `npm install -g @anthropic-ai/claude-code && claude`
-- **GitHub token** with `repo` scope — [create one](https://github.com/settings/tokens)
+- **Claude Code** installed and authenticated: `npm install -g @anthropic-ai/claude-code && claude`
+- **GitHub token** with `repo` scope: [create one](https://github.com/settings/tokens)
 
 ### Usage
 
@@ -73,11 +73,11 @@ If you prefer not to use the setup script:
 
 ---
 
-## reproduce_ci.sh — Reproduce CI Locally
+## reproduce_ci.sh: Reproduce CI Locally
 
 When CI fails, debugging requires pushing commits and waiting for results. This script reproduces the exact CI environment locally in a persistent Docker container, so you can debug interactively.
 
-It creates a Docker container using the same image as CI, clones your repo and its dependencies, builds everything, and optionally runs tests — mirroring the steps in `setup_and_build_ros_ws.yml`.
+It creates a Docker container using the same image as CI, clones your repo and its dependencies, builds everything, and optionally runs tests, mirroring the steps in `setup_and_build_ros_ws.yml`.
 
 ### Quick Start
 
@@ -169,8 +169,8 @@ docker rm -f er_ci_reproduced_testing_env
 
 ### Troubleshooting
 
-**Container already exists** — Remove it first: `docker rm -f er_ci_reproduced_testing_env`
+**Container already exists**: Remove it first: `docker rm -f er_ci_reproduced_testing_env`
 
-**404 when fetching scripts** — Check that your `--gh-token` has access to `er_build_tools_internal`, and that the `--scripts-branch` exists.
+**404 when fetching scripts**: Check that your `--gh-token` has access to `er_build_tools_internal`, and that the `--scripts-branch` exists.
 
-**`DISPLAY` error with graphical forwarding** — Either set `DISPLAY` (e.g. via X11 forwarding) or pass `--graphical false`.
+**`DISPLAY` error with graphical forwarding**: Either set `DISPLAY` (e.g. via X11 forwarding) or pass `--graphical false`.
