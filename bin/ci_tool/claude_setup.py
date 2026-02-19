@@ -135,9 +135,20 @@ rerun_tests() {
     packages=$(tr '\n' ' ' < "$packages_file")
     echo "Rebuilding and testing: ${packages}"
     cd /ros_ws
-    colcon build --packages-select ${packages} --cmake-args -DSETUPTOOLS_DEB_LAYOUT=OFF
+    colcon build --packages-select ${packages} --cmake-args -DSETUPTOOLS_DEB_LAYOUT=OFF \
+        2>&1 | tee /ros_ws/.colcon_build.log | tail -n 50
+    local build_ret=${PIPESTATUS[0]}
+    local build_total=$(wc -l < /ros_ws/.colcon_build.log)
+    [ "$build_total" -gt 50 ] && echo "--- (last 50 of $build_total lines — full log: /ros_ws/.colcon_build.log) ---"
+    if [ "$build_ret" -ne 0 ]; then
+        echo "Build failed (exit code $build_ret)"
+        return $build_ret
+    fi
     source /ros_ws/install/setup.bash
-    colcon test --packages-select ${packages}
+    colcon test --packages-select ${packages} \
+        2>&1 | tee /ros_ws/.colcon_test.log | tail -n 50
+    local test_total=$(wc -l < /ros_ws/.colcon_test.log)
+    [ "$test_total" -gt 50 ] && echo "--- (last 50 of $test_total lines — full log: /ros_ws/.colcon_test.log) ---"
     for pkg in ${packages}; do
         if ! colcon test-result --test-result-base "build/$pkg/test_results"; then
             python3 - "build/$pkg/test_results" <<'PYEOF'
@@ -181,6 +192,59 @@ resume_claude() {
 '''
 
 
+COLCON_WRAPPERS = r'''
+colcon_build() {
+    cd /ros_ws && source /opt/ros/noetic/setup.bash
+    local cmd="colcon build --cmake-args -DSETUPTOOLS_DEB_LAYOUT=OFF"
+    [ -n "$1" ] && cmd="$cmd --packages-up-to $1"
+    echo "$cmd"
+    eval "$cmd" 2>&1 | tee /ros_ws/.colcon_build.log | tail -n 50
+    local ret=${PIPESTATUS[0]}
+    local total=$(wc -l < /ros_ws/.colcon_build.log)
+    [ "$total" -gt 50 ] && echo "--- (last 50 of $total lines — full log: /ros_ws/.colcon_build.log) ---"
+    source /ros_ws/install/setup.bash 2>/dev/null
+    return $ret
+}
+
+colcon_build_no_deps() {
+    cd /ros_ws && source /opt/ros/noetic/setup.bash
+    local cmd="colcon build --cmake-args -DSETUPTOOLS_DEB_LAYOUT=OFF"
+    [ -n "$1" ] && cmd="$cmd --packages-select $1"
+    echo "$cmd"
+    eval "$cmd" 2>&1 | tee /ros_ws/.colcon_build.log | tail -n 50
+    local ret=${PIPESTATUS[0]}
+    local total=$(wc -l < /ros_ws/.colcon_build.log)
+    [ "$total" -gt 50 ] && echo "--- (last 50 of $total lines — full log: /ros_ws/.colcon_build.log) ---"
+    source /ros_ws/install/setup.bash 2>/dev/null
+    return $ret
+}
+
+colcon_build_this() {
+    colcon_build "$(find_cmake_project_names_from_dir .)"
+}
+
+colcon_test_these_packages() {
+    cd /ros_ws
+    colcon_build_no_deps "$1"
+    local build_ret=$?
+    [ "$build_ret" -ne 0 ] && return $build_ret
+    source /ros_ws/install/setup.bash
+    colcon test --packages-select $1 2>&1 | tee /ros_ws/.colcon_test.log | tail -n 50
+    local total=$(wc -l < /ros_ws/.colcon_test.log)
+    [ "$total" -gt 50 ] && echo "--- (last 50 of $total lines — full log: /ros_ws/.colcon_test.log) ---"
+    for pkg in $1; do
+        if ! colcon test-result --test-result-base "build/$pkg/test_results"; then
+            type _show_test_failures &>/dev/null && _show_test_failures "build/$pkg/test_results"
+        fi
+    done
+}
+
+colcon_test_this_package() {
+    colcon_test_these_packages "$@"
+}
+'''
+
+
 def inject_resume_function(container_name):
     """Add resume_claude bash function to the container's bashrc."""
     console.print("[cyan]Injecting resume_claude function...[/cyan]")
@@ -196,6 +260,32 @@ def inject_resume_function(container_name):
         container_name,
         f"echo '{marker}' >> /root/.bashrc && cat >> /root/.bashrc << 'RESUME_EOF'\n"
         f"{RESUME_CLAUDE_FUNCTION}\nRESUME_EOF",
+        quiet=True,
+    )
+
+
+def inject_colcon_wrappers(container_name):
+    """Add output-limiting colcon wrapper functions to the container.
+
+    Appends to /root/.helper_bash_functions so wrappers override originals.
+    Uses a marker comment for idempotent injection.
+    """
+    console.print("[cyan]Injecting colcon output wrappers...[/cyan]")
+    target = "/root/.helper_bash_functions"
+    marker = "# ci_fix colcon_wrappers"
+
+    docker_exec(container_name, f"touch {target}", quiet=True)
+    already_present = docker_exec(
+        container_name, f"grep -q '{marker}' {target}",
+        check=False, quiet=True,
+    )
+    if already_present.returncode == 0:
+        return
+
+    docker_exec(
+        container_name,
+        f"echo '{marker}' >> {target} && cat >> {target} << 'WRAPPERS_EOF'\n"
+        f"{COLCON_WRAPPERS}\nWRAPPERS_EOF",
         quiet=True,
     )
 
@@ -426,6 +516,7 @@ def setup_claude_in_container(container_name):
     inject_rerun_tests_function(container_name)
     copy_claude_memory(container_name)
     copy_helper_bash_functions(container_name)
+    inject_colcon_wrappers(container_name)
     configure_git_in_container(container_name)
 
     console.print("[bold green]Claude Code is installed and configured in the container[/bold green]")

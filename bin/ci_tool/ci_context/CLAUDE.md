@@ -9,6 +9,8 @@ Use Grep to search log files for relevant errors — never read entire log files
 When examining test output, search for FAILURE, FAILED, ERROR, or assertion messages.
 Pipe long command output through `tail -200` or `grep` to avoid dumping huge logs.
 
+Always use the helper functions (`colcon_build`, `colcon_build_no_deps`, `colcon_test_this_package`) instead of raw `colcon` commands — they limit output to the last 50 lines and log full output to `/ros_ws/.colcon_build.log` and `/ros_ws/.colcon_test.log`. If you need more detail, Grep the log files.
+
 ## Environment Setup
 
 ```bash

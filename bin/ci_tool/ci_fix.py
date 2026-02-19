@@ -20,6 +20,7 @@ from ci_tool.claude_setup import (
     copy_display_script,
     copy_learnings_from_container,
     copy_learnings_to_container,
+    inject_colcon_wrappers,
     inject_rerun_tests_function,
     inject_resume_function,
     is_claude_installed_in_container,
@@ -422,6 +423,7 @@ def refresh_claude_config(container_name):
     copy_display_script(container_name)
     inject_resume_function(container_name)
     inject_rerun_tests_function(container_name)
+    inject_colcon_wrappers(container_name)
     seed_claude_state(container_name)
 
 
