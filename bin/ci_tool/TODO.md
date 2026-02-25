@@ -4,6 +4,10 @@
 
 - [ ] **Parallel CI analysis during local reproduction**: When a GitHub Actions URL is provided, start the local build/test reproduction immediately and, in parallel, fetch the CI logs (`gh run view --log-failed`), digest the failures, and present a summary to the user while the container is still building. Currently `reproduce_ci()` blocks in `fix_ci()` (step 3) before any analysis happens. The idea: spawn the reproduction in the background, use the CI URL to pull logs and identify failures concurrently, then present the analysis to the user so they understand the problem before local tests even finish. This saves the entire reproduction wait time for understanding what went wrong.
 
+## UX
+
+- [ ] **Simplify the main menu**: Too many top-level options (reproduce, fix, claude, shell, retest, clean, exit). Several overlap — e.g. "Reproduce CI" is already a step within "Fix CI with Claude", and "Claude session" / "Shell into container" / "Re-run tests" are all post-reproduce actions on an existing container. Consolidate into fewer choices and push the rest into sub-menus or contextual prompts.
+
 ## Bug Fixes
 
 - [ ] If branch name is empty/blank, default to the repo's default branch instead of requiring input
