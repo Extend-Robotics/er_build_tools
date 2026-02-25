@@ -2,22 +2,33 @@
 
 ## Goal
 
-Add an "Analyse CI" mode to ci_tool that fetches and analyses GitHub Actions
-failure logs in parallel with local Docker reproduction, displaying both in a
-split Rich Live Layout, then offering to transition into fix mode.
+Add an "Analyse CI" mode to ci_tool that diagnoses CI failures. Offers two
+sub-modes: a fast remote-only analysis (fetch + filter GH Actions logs, diagnose
+with Claude haiku), and a full parallel analysis that also reproduces locally in
+Docker.
 
 ## User Flow
 
 1. User selects **"Analyse CI"** from main menu (or `ci_tool analyse`)
 2. Provides a **GitHub Actions URL** (required)
-3. Provides build options (only-needed-deps) and session name
-4. Two parallel threads start with a Rich Live split-panel display:
-   - **Top panel ("Remote CI Logs"):** Fetches GH Actions logs, filters them
-     with Python regex, sends reduced context to Claude haiku for diagnosis
-   - **Bottom panel ("Local Reproduction"):** Runs `reproduce_ci()` in Docker,
-     then analyses local `test_output.log` with Claude inside the container
-5. Once both complete, prints a combined summary
-6. Asks: "Proceed to fix with Claude?" — if yes, transitions into existing
+3. Sub-menu: **"Remote only (fast)"** vs **"Remote + local reproduction"**
+
+### Remote only (fast)
+
+4. Fetches GH Actions logs, filters with Python regex, sends reduced context
+   to Claude haiku on host for diagnosis
+5. Prints structured report
+6. Done — no container, no Docker
+
+### Remote + local reproduction
+
+4. Provides build options (only-needed-deps) and session name
+5. Two parallel threads start with a Rich Live split-panel display:
+   - **Top panel ("Remote CI Logs"):** Same as remote-only pipeline above
+   - **Bottom panel ("Local Reproduction"):** `reproduce_ci()` in Docker,
+     then Claude analyses local `test_output.log` inside the container
+6. Once both complete, prints combined summary
+7. Asks: "Proceed to fix with Claude?" — if yes, transitions into existing
    `run_claude_workflow()` fix phase (container already set up)
 
 ## Architecture
@@ -25,22 +36,21 @@ split Rich Live Layout, then offering to transition into fix mode.
 ### New file: `bin/ci_tool/ci_analyse.py`
 
 Entry point `analyse_ci(args)`:
-- Prompts for GH Actions URL (required for this mode)
-- Prompts for build options + session name
-- Runs preflight checks
-- Launches `ParallelAnalyser`
+- Prompts for GH Actions URL (required)
+- Sub-menu for analysis depth
+- Remote-only: runs remote pipeline, prints report, exits
+- Full: runs preflight, launches parallel threads with split display
 
-### Remote Analysis Pipeline (top panel)
+### Remote Analysis Pipeline
 
 ```
 gh run view {run_id} --log-failed
         |
         v
-  Python regex filter
+  Python regex filter (ci_log_filter.py)
   - Extract ERROR/FAIL/assertion/[FAIL] blocks
   - Keep ~5 lines context around each match
   - Strip ANSI codes, timestamps, build noise
-  - Deduplicate (same error in summary + detail)
         |
         v
   ~50-200 lines (vs thousands raw)
@@ -49,10 +59,10 @@ gh run view {run_id} --log-failed
   claude --model haiku -p "Analyse these CI failures..."
         |
         v
-  Structured diagnosis displayed in top panel
+  Structured diagnosis
 ```
 
-### Local Reproduction Pipeline (bottom panel)
+### Local Reproduction Pipeline (full mode only)
 
 ```
 reproduce_ci() (existing)
@@ -63,21 +73,26 @@ reproduce_ci() (existing)
   setup_claude_in_container() (existing)
         |
         v
-  run_claude_streamed() with ANALYSIS_PROMPT_TEMPLATE (existing)
+  Claude analysis with ANALYSIS_PROMPT_TEMPLATE (existing)
         |
         v
-  Analysis displayed in bottom panel
+  Local analysis results
 ```
 
-### ParallelAnalyser class
+### New file: `bin/ci_tool/ci_log_filter.py`
 
-- Uses `threading.Thread` for both pipelines
+Python regex-based log filter. Extracts failure-relevant lines with surrounding
+context, strips ANSI codes and timestamps. Reduces thousands of raw log lines
+to ~50-200 lines for Claude haiku.
+
+### New file: `bin/ci_tool/ci_analyse_display.py`
+
+`SplitPanelDisplay` class for the full parallel mode:
 - `rich.live.Live` with `rich.layout.Layout` (two rows)
-- Each panel wraps a `rich.text.Text` that gets appended to from its thread
-- Thread-safe updates via Lock
-- Both threads capture their results for the combined summary
+- Thread-safe `append_remote()` / `append_local()` methods
+- Auto-refreshes at 4 Hz
 
-### Display Layout
+### Display Layout (full mode only)
 
 ```
 +------------------------------------------+
@@ -103,15 +118,16 @@ reproduce_ci() (existing)
 
 ## Error Handling
 
-- **GH logs unavailable:** Fail fast in top panel, local reproduction continues
-- **One thread fails:** Show partial results with warning about failed side
-- **Claude on host fails:** Fall back to displaying filtered logs raw
-- **Container build fails:** Show build error in bottom panel, remote completes
+- **GH logs unavailable:** Fail fast with clear error message
+- **One thread fails (full mode):** Show partial results with warning
+- **Claude haiku on host fails:** Fall back to displaying filtered logs raw
+- **Container build fails (full mode):** Show error in bottom panel, remote
+  analysis still completes
 
-## Fix Transition
+## Fix Transition (full mode only)
 
 After both panels complete:
-1. Print combined report (findings from both remote and local analysis)
+1. Print combined report
 2. Prompt: "Proceed to fix with Claude?"
    - Yes: transition into existing `run_claude_workflow()` with container ready
    - No: offer shell access or exit
@@ -121,4 +137,4 @@ After both panels complete:
 - `rich` (already in requirements.txt) — Live, Layout, Panel, Text
 - `gh` CLI (already required) — for `gh run view --log-failed`
 - `claude` on host — for haiku analysis of filtered remote logs
-- `threading` (stdlib) — parallel execution
+- `threading` (stdlib) — parallel execution (full mode only)
