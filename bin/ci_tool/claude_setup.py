@@ -145,8 +145,27 @@ rerun_tests() {
         return $build_ret
     fi
     source /ros_ws/install/setup.bash
-    colcon test --packages-select ${packages} \
-        2>&1 | tee /ros_ws/.colcon_test.log | tail -n 50
+
+    local verbose_packages=""
+    while IFS=$'\t' read -r name path _; do
+        if echo " ${packages} " | grep -q " ${name} "; then
+            if [ -f "${path}/.verbose_tests" ]; then
+                verbose_packages="${verbose_packages} ${name}"
+            fi
+        fi
+    done < <(colcon list 2>/dev/null)
+    verbose_packages="${verbose_packages## }"
+
+    if [ -n "${verbose_packages}" ]; then
+        echo "Packages with verbose tests: ${verbose_packages}"
+        colcon test --packages-select ${packages} --packages-skip ${verbose_packages} \
+            2>&1 | tee /ros_ws/.colcon_test.log | tail -n 50
+        colcon test --packages-select ${verbose_packages} --event-handlers console_direct+ \
+            2>&1 | tee -a /ros_ws/.colcon_test.log
+    else
+        colcon test --packages-select ${packages} \
+            2>&1 | tee /ros_ws/.colcon_test.log | tail -n 50
+    fi
     local test_total=$(wc -l < /ros_ws/.colcon_test.log)
     [ "$test_total" -gt 50 ] && echo "--- (last 50 of $test_total lines — full log: /ros_ws/.colcon_test.log) ---"
     for pkg in ${packages}; do

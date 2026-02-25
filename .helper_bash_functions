@@ -44,18 +44,37 @@ for d in sys.argv[1:]:
                         print(f"    ... ({len(lines) - 20} more lines)")
 PYEOF
 }
+_find_verbose_test_packages() {
+    local requested_packages="$1"
+    local verbose_packages=""
+    while IFS=$'\t' read -r name path _; do
+        if echo " ${requested_packages} " | grep -q " ${name} "; then
+            if [ -f "${path}/.verbose_tests" ]; then
+                verbose_packages="${verbose_packages} ${name}"
+            fi
+        fi
+    done < <(colcon list 2>/dev/null)
+    echo "${verbose_packages## }"
+}
 colcon_test_these_packages() { THIS_DIR=$(pwd)
                                cd ${CATKIN_WS_PATH}
                                colcon_build_no_deps $1
-                               source install/setup.bash && \
-                               colcon test --packages-select $1
+                               source install/setup.bash
+                               local verbose_packages
+                               verbose_packages=$(_find_verbose_test_packages "$1")
+                               if [ -n "${verbose_packages}" ]; then
+                                   echo -e "${Yellow}Packages with verbose tests: ${verbose_packages}${Color_Off}"
+                                   colcon test --packages-select $1 --packages-skip ${verbose_packages}
+                                   colcon test --packages-select ${verbose_packages} --event-handlers console_direct+
+                               else
+                                   colcon test --packages-select $1
+                               fi
                                for pkg in $1; do
                                    if ! colcon test-result --test-result-base "build/$pkg/test_results"; then
                                        _show_test_failures "build/$pkg/test_results"
                                    fi
                                done
                                cd $THIS_DIR
-
 }
 colcon_test_this_package() { colcon_test_these_packages "$@"; }  # Alias for backwards compatability
 find_cmake_project_names_from_dir() { if [[ -z $1 ]]; then DIR_TO_SEARCH="."; else DIR_TO_SEARCH=$1; fi; wget -qO- https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/find_cmake_project_names.py | python3 - $DIR_TO_SEARCH; }
