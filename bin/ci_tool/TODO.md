@@ -1,8 +1,13 @@
 # ci_tool TODO
 
+## Features
+
+- [ ] **Parallel CI analysis during local reproduction**: When a GitHub Actions URL is provided, start the local build/test reproduction immediately and, in parallel, fetch the CI logs (`gh run view --log-failed`), digest the failures, and present a summary to the user while the container is still building. Currently `reproduce_ci()` blocks in `fix_ci()` (step 3) before any analysis happens. The idea: spawn the reproduction in the background, use the CI URL to pull logs and identify failures concurrently, then present the analysis to the user so they understand the problem before local tests even finish. This saves the entire reproduction wait time for understanding what went wrong.
+
 ## Bug Fixes
 
 - [ ] If branch name is empty/blank, default to the repo's default branch instead of requiring input
+- [ ] In "Reproduce CI (create container)" mode, extract the branch name from the GitHub Actions URL (like `extract_info_from_ci_url` already does in "Fix CI with Claude" mode) instead of requiring the user to enter it manually
 
 ## Done
 - [x] ~~Render markdown in terminal~~ — display_progress.py now buffers text between tool calls and renders via `rich.markdown.Markdown` (tables, headers, code blocks, bold/italic)
