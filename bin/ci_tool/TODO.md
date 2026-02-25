@@ -2,7 +2,8 @@
 
 ## Features
 
-- [ ] **Parallel CI analysis during local reproduction**: When a GitHub Actions URL is provided, start the local build/test reproduction immediately and, in parallel, fetch the CI logs (`gh run view --log-failed`), digest the failures, and present a summary to the user while the container is still building. Currently `reproduce_ci()` blocks in `fix_ci()` (step 3) before any analysis happens. The idea: spawn the reproduction in the background, use the CI URL to pull logs and identify failures concurrently, then present the analysis to the user so they understand the problem before local tests even finish. This saves the entire reproduction wait time for understanding what went wrong.
+- [ ] **Analyse CI mode**: Implement the plan in `docs/plans/2026-02-25-ci-analyse-mode-plan.md`. New "Analyse CI" menu item with two sub-modes: "Remote only (fast)" fetches GH Actions logs, filters with regex, diagnoses with Claude haiku on host — no Docker. "Remote + local reproduction" runs both in parallel with a Rich Live split-panel display, then offers to transition into fix mode. New files: `ci_analyse.py`, `ci_analyse_display.py`, `ci_log_filter.py`.
+- [x] ~~**Parallel CI analysis during local reproduction**~~: Superseded by the Analyse CI mode above.
 
 ## UX
 
