@@ -56,8 +56,13 @@ if not os.path.isdir(root_path):
     print(f"Error: The path '{root_path}' is not a directory.")
     sys.exit(1)
 
+IGNORED_DIRECTORY_PREFIXES = ('.', '__pycache__')
+
 project_names = []
 for dirpath, dirnames, filenames in os.walk(root_path):
+    dirnames[:] = [
+        d for d in dirnames if not d.startswith(IGNORED_DIRECTORY_PREFIXES)
+    ]
     if 'CMakeLists.txt' in filenames:
         cmakelists_path = os.path.join(dirpath, 'CMakeLists.txt')
         with open(cmakelists_path, 'r') as file:
