@@ -26,13 +26,33 @@ colcon_build() { START_DIR=$(pwd) && \
 }
 colcon_build_this() { colcon_build "$(find_cmake_project_names_from_dir .)"; }
 rosdep_install() { rosdep install --from-paths src --ignore-src -r -y ; }
+_show_test_failures() {
+    python3 - "$@" <<'PYEOF'
+import sys, xml.etree.ElementTree as ET
+from pathlib import Path
+for d in sys.argv[1:]:
+    for p in sorted(Path(d).rglob("*.xml")):
+        for tc in ET.parse(p).iter("testcase"):
+            for f in list(tc.iter("failure")) + list(tc.iter("error")):
+                tag = "FAIL" if f.tag == "failure" else "ERROR"
+                print(f"\n  {tag}: {tc.get('classname', '')}.{tc.get('name', '')}")
+                if f.text:
+                    lines = f.text.strip().splitlines()
+                    for l in lines[:20]:
+                        print(f"    {l}")
+                    if len(lines) > 20:
+                        print(f"    ... ({len(lines) - 20} more lines)")
+PYEOF
+}
 colcon_test_these_packages() { THIS_DIR=$(pwd)
                                cd ${CATKIN_WS_PATH}
                                colcon_build_no_deps $1
                                source install/setup.bash && \
                                colcon test --packages-select $1
                                for pkg in $1; do
-                                   colcon test-result --verbose --test-result-base "build/$pkg"
+                                   if ! colcon test-result --test-result-base "build/$pkg/test_results"; then
+                                       _show_test_failures "build/$pkg/test_results"
+                                   fi
                                done
                                cd $THIS_DIR
 
@@ -135,6 +155,56 @@ er_pylint_sorted_here() { er_pylint_here | sort -V | grep -v "\*\*\*\*\*\*\*\*";
 er_pylint_single_file() { check_pylintrc; check_apt_package "pylint";  pylint --rcfile /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH} $1; }
 er_pylint_single_file_sorted() { er_pylint_single_file $1 | sort -V | grep -v "\*\*\*\*\*\*\*\*"; return ${PIPESTATUS[0]}; }
 er_ruff_here() { ruff check; }
+
+
+# reproduce ci locally
+DEFAULT_CI_CONTAINER_NAME="er_ci_reproduced_testing_env"
+reproduce_ci() {
+    local token="${ER_SETUP_TOKEN:-}"
+    local args=("$@")
+    local has_token="false"
+    local CI_BRANCH="ERD-1633_reproduce_ci_locally"
+    for arg in "${args[@]}"; do
+        if [ "${arg}" = "--gh-token" ] || [ "${arg}" = "-t" ]; then
+            has_token="true"
+            break
+        fi
+    done
+    if [ "${has_token}" = "false" ]; then
+        if [ -z "${token}" ]; then
+            echo -e "${Red}Error: --gh-token not provided and ER_SETUP_TOKEN is not set${Color_Off}"
+            return 1
+        fi
+        args=("--gh-token" "${token}" "${args[@]}")
+    fi
+    local wrapper_script
+    wrapper_script=$(curl -fSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${CI_BRANCH}/bin/reproduce_ci.sh) || {
+        echo -e "${Red}Error: Failed to fetch reproduce_ci.sh wrapper from er_build_tools main branch${Color_Off}"
+        return 1
+    }
+    bash <(echo "${wrapper_script}") "${args[@]}"
+}
+repull_and_rerun_ci_tests() {
+    local container_name="${1:-${DEFAULT_CI_CONTAINER_NAME}}"
+    if ! docker ps --filter "name=^${container_name}$" --format '{{.Names}}' | grep -q .; then
+        echo -e "${Red}Error: Container '${container_name}' is not running${Color_Off}"
+        return 1
+    fi
+    docker exec "${container_name}" bash /tmp/ci_repull_and_retest.sh
+}
+remove_ci_container() {
+    local container_name="${1:-${DEFAULT_CI_CONTAINER_NAME}}"
+    if ! docker ps -a --filter "name=^${container_name}$" --format '{{.Names}}' | grep -q .; then
+        echo -e "${Yellow}Container '${container_name}' does not exist${Color_Off}"
+        return 0
+    fi
+    echo "Stopping and removing container '${container_name}'..."
+    docker rm -f "${container_name}"
+    echo -e "${Green}Container '${container_name}' removed${Color_Off}"
+}
+
+
+
 er_python_linters_here() { local ret=0
                            echo
                            er_pylint_sorted_here || ret=$?
