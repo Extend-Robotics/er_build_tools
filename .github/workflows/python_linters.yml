@@ -1,0 +1,169 @@
+name: Python Linters
+
+on:
+  workflow_call:
+    inputs:
+      blacklist:
+        description: 'Newline-separated list of file or directory paths to exclude from linting'
+        required: false
+        type: string
+        default: ''
+
+env:
+  MAX_LINE_LENGTH: 150
+
+jobs:
+  flake8:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8==3.7.9
+    - name: Get pylintrc file
+      run: |
+        wget https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/pylintrc -O .github/workflows/pylintrc
+    - name: Analysing the code with flake8
+      run: |
+        BLACKLIST="${{ inputs.blacklist }}"
+        ALL_FILES=$(git ls-files '*.py')
+        FILES="$ALL_FILES"
+        if [ -n "$BLACKLIST" ]; then
+          echo "=========================================="
+          echo "Blacklist is enabled for flake8"
+          echo "=========================================="
+          echo "Blacklist patterns:"
+          echo "$BLACKLIST" | while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            echo "  - $pattern"
+          done
+          echo ""
+          while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            FILES=$(echo "$FILES" | grep -v "^${pattern}")
+          done <<< "$BLACKLIST"
+          EXCLUDED=$(comm -23 <(echo "$ALL_FILES" | sort) <(echo "$FILES" | sort))
+          if [ -n "$EXCLUDED" ]; then
+            EXCLUDED_COUNT=$(echo "$EXCLUDED" | wc -l)
+            echo "Excluded files ($EXCLUDED_COUNT):"
+            echo "$EXCLUDED" | while read -r f; do echo "  - $f"; done
+          else
+            echo "No files matched the blacklist patterns"
+          fi
+          echo ""
+        fi
+        if [ -n "$FILES" ]; then
+          FILE_COUNT=$(echo "$FILES" | wc -l)
+          echo "Files to lint ($FILE_COUNT):"
+          echo "$FILES" | while read -r f; do echo "  - $f"; done
+          echo ""
+          echo "Running flake8..."
+          echo "=========================================="
+          flake8 --config .github/workflows/pylintrc $FILES --max-line-length $MAX_LINE_LENGTH
+        else
+          echo "No files to lint after applying blacklist"
+        fi
+
+  pylint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pylint==2.10.2
+    - name: Get pylintrc file
+      run: |
+        wget https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/pylintrc -O .github/workflows/pylintrc
+    - name: Analysing the code with pylint
+      run: |
+        BLACKLIST="${{ inputs.blacklist }}"
+        ALL_FILES=$(git ls-files '*.py')
+        FILES="$ALL_FILES"
+        if [ -n "$BLACKLIST" ]; then
+          echo "=========================================="
+          echo "Blacklist is enabled for pylint"
+          echo "=========================================="
+          echo "Blacklist patterns:"
+          echo "$BLACKLIST" | while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            echo "  - $pattern"
+          done
+          echo ""
+          while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            FILES=$(echo "$FILES" | grep -v "^${pattern}")
+          done <<< "$BLACKLIST"
+          EXCLUDED=$(comm -23 <(echo "$ALL_FILES" | sort) <(echo "$FILES" | sort))
+          if [ -n "$EXCLUDED" ]; then
+            EXCLUDED_COUNT=$(echo "$EXCLUDED" | wc -l)
+            echo "Excluded files ($EXCLUDED_COUNT):"
+            echo "$EXCLUDED" | while read -r f; do echo "  - $f"; done
+          else
+            echo "No files matched the blacklist patterns"
+          fi
+          echo ""
+        fi
+        if [ -n "$FILES" ]; then
+          FILE_COUNT=$(echo "$FILES" | wc -l)
+          echo "Files to lint ($FILE_COUNT):"
+          echo "$FILES" | while read -r f; do echo "  - $f"; done
+          echo ""
+          echo "Running pylint..."
+          echo "=========================================="
+          pylint --rcfile .github/workflows/pylintrc $FILES | sort -V | { grep -v "\*\*\*\*\*\*\*\*" || true; }
+        else
+          echo "No files to lint after applying blacklist"
+        fi
+
+  ruff:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install ruff==0.14.13
+    - name: Analysing the code with ruff
+      run: |
+        BLACKLIST="${{ inputs.blacklist }}"
+        EXCLUDE_ARGS=""
+        if [ -n "$BLACKLIST" ]; then
+          echo "=========================================="
+          echo "Blacklist is enabled for ruff"
+          echo "=========================================="
+          echo "Blacklist patterns:"
+          while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            echo "  - $pattern"
+            EXCLUDE_ARGS="$EXCLUDE_ARGS --exclude $pattern"
+          done <<< "$BLACKLIST"
+          echo ""
+          echo "Running ruff with exclusions..."
+          echo "=========================================="
+        else
+          echo "Running ruff..."
+        fi
+        ruff check $EXCLUDE_ARGS
