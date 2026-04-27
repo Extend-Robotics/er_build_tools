@@ -171,8 +171,8 @@ update_helper_bash_functions() { if [ ! -f ~/.helper_bash_functions ]; then
                                    echo -e "${Red}ERROR: Tried to replace this file but couldn't find it, something has gone wrong!${Color_Off}\n"
                                    return
                                  fi
-                                 if [ -f ${FIND_PYTHON_FILES_SCRIPT} ]; then
-                                   rm ${FIND_PYTHON_FILES_SCRIPT}
+                                 if [ -f "${FIND_PYTHON_FILES_SCRIPT}" ]; then
+                                   rm "${FIND_PYTHON_FILES_SCRIPT}"
                                  fi
                                  check_find_python_files
                                  wget -O ~/.helper_bash_functions ${THIS_SCRIPT_URL}
