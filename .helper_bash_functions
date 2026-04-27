@@ -195,7 +195,11 @@ update_helper_bash_functions() {
         return 1
     }
 
-    python3 <(echo "${merge_script}") ~/.helper_bash_functions "${tmp_new}"
+    if ! python3 <(echo "${merge_script}") ~/.helper_bash_functions "${tmp_new}"; then
+        echo -e "${Red}Error: merge_helper_vars.py failed; aborting update to preserve local customizations${Color_Off}"
+        rm -f "${tmp_new}"
+        return 1
+    fi
     cp "${tmp_new}" ~/.helper_bash_functions
     rm -f "${tmp_new}"
 
