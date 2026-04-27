@@ -8,25 +8,23 @@
 #
 # DETECTION
 #   A file counts as Python if EITHER condition holds:
-#     - filename ends in .py or .pyi    (library modules, normal scripts)
-#     - `file -bi` reports a mime type containing "python" (driven
-#       internally by the file having a Python shebang on line 1, which
-#       is also the only way the kernel recognises it as Python — e.g.
-#       ROS nodes in scripts/ exec'd by name with no extension).
-#       libmagic emits either text/x-python or text/x-script.python
-#       depending on version, hence the substring match rather than an
-#       exact one (see Extend-Robotics/er_build_tools#37).
+#     - filename ends in .py or .pyi   (library modules, normal scripts)
+#     - first line of the file is a Python shebang (`^#!.*python`)
+#       — the only way the kernel recognises an extension-less file
+#       as Python (e.g. ROS nodes in scripts/ exec'd by name).
 #   Both rules are needed because they catch disjoint cases:
 #     - Library code under src/ has .py but no shebang (libraries are
-#       not meant to be directly executable), so mime-only would miss
-#       every src/ module — `file` reports them as text/plain since
-#       they have no shebang and Python has no magic number.
+#       not meant to be directly executable), so shebang-only would
+#       miss every src/ module.
 #     - ROS nodes named like `scripts/my_node` have a shebang but no
 #       .py extension, so extension-only would miss them.
-#   The earlier `find_python_files_here` shipped only the mime check
-#   and so silently skipped every .py library file under src/. The
-#   extension check fixes that; the mime check covers the no-extension
-#   case.
+#
+#   We do NOT use `file -bi` for the shebang case. libmagic produces
+#   false positives on Markdown READMEs whose first line is `# Title`
+#   (it sees `# something` as a Python comment and labels the whole
+#   file `text/x-python`). The kernel-level shebang rule is precise:
+#   `#!` must be the first two bytes for the file to be exec'd as
+#   Python, so we check that directly.
 #
 # SCOPE
 #   Two modes, picked automatically:
@@ -68,16 +66,15 @@ EXCLUDE_DIRS="${EXCLUDE_DIRS:-__pycache__}"
 
 # Print $1 to stdout iff it's a Python source file.
 #
-# `file` reports Python with either `text/x-python` or
-# `text/x-script.python` depending on libmagic version (see
-# Extend-Robotics/er_build_tools#37), so we grep for the substring
-# `python` in the mime line. `-b` strips the filename from the output
-# so a non-Python file whose name contains "python" doesn't slip in.
+# The shebang check reads the first 256 bytes of the file and inspects
+# only the first line. The byte cap stops us slurping a multi-MB binary
+# that happens to lack newlines; `head -n 1` then anchors the regex to
+# the first line as the kernel requires for a real shebang.
 emit_if_python() {
     case "$1" in
         *.py|*.pyi) printf '%s\n' "$1"; return 0 ;;
     esac
-    if [ -f "$1" ] && file -bi "$1" 2>/dev/null | grep -q python; then
+    if [ -f "$1" ] && head -c 256 "$1" 2>/dev/null | head -n 1 | grep -q '^#!.*python'; then
         printf '%s\n' "$1"
     fi
 }
