@@ -147,6 +147,14 @@ function confirm() {
 			;;
 	esac
 }
+FIND_PYTHON_FILES_SCRIPT="$HOME/.find_python_files.sh"
+check_find_python_files() {
+  if ! [ -x "$FIND_PYTHON_FILES_SCRIPT" ]; then
+	  wget -qO "$FIND_PYTHON_FILES_SCRIPT" \
+		https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/find_python_files.sh
+	  chmod +x "$FIND_PYTHON_FILES_SCRIPT"
+  fi
+}
 alias cgrep="grep --color=always"
 ps_aux() { ps aux | cgrep $1 | grep -v grep ; }
 ps_aux_command() { ps -e -o command | cgrep $1 | grep -v grep ; }
@@ -163,12 +171,19 @@ update_helper_bash_functions() { if [ ! -f ~/.helper_bash_functions ]; then
                                    echo -e "${Red}ERROR: Tried to replace this file but couldn't find it, something has gone wrong!${Color_Off}\n"
                                    return
                                  fi
+                                 if [ -f "${FIND_PYTHON_FILES_SCRIPT}" ]; then
+                                   rm "${FIND_PYTHON_FILES_SCRIPT}"
+                                 fi
+                                 check_find_python_files
                                  wget -O ~/.helper_bash_functions ${THIS_SCRIPT_URL}
 }
 
 # python linters
 LINTER_MAX_LINE_LENGTH="140"
-find_python_files_here() { find . -type f | while read in ; do if file -ib "${in}" | grep -q python ; then echo -n "${in} " ; fi ; done; }
+find_python_files_here() {
+  check_find_python_files
+  "$FIND_PYTHON_FILES_SCRIPT"
+}
 print_reinstall_warning() { echo -e "${Red}INFO: Just installed $1. Please re-run the last command to get the output and formatting that you're expecting.${Color_Off}"; }
 check_pylintrc() { if ! [ -f /tmp/pylintrc ]; then wget -O /tmp/pylintrc https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/pylintrc; fi; }
 check_apt_package() { if [[ $(dpkg -l | grep -w $1 | wc -l) -eq 0 ]]; then sudo apt update && sudo apt install -y $1; echo "installed"; fi; }
