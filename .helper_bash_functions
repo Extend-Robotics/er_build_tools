@@ -213,6 +213,7 @@ LINTER_MAX_LINE_LENGTH="140"
 
 check_linter_versions() {
     if ! [ -s /tmp/linter_versions.env ]; then
+        echo -e "${Yellow}Fetching ${LINTER_VERSIONS_URL}...${Color_Off}"
         local tmp=/tmp/linter_versions.env.tmp
         if ! wget -qO "$tmp" "$LINTER_VERSIONS_URL" || ! [ -s "$tmp" ]; then
             echo -e "${Red}Failed to fetch ${LINTER_VERSIONS_URL}${Color_Off}" >&2
@@ -235,7 +236,7 @@ ensure_uv() {
     [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && return 0
     echo -e "${Yellow}Installing uv...${Color_Off}"
-    curl -LsSf https://astral.sh/uv/install.sh | sh || return 1
+    curl -LSf https://astral.sh/uv/install.sh | sh || return 1
     command -v uv &>/dev/null
 }
 ensure_uv_tool_pinned() {
@@ -244,6 +245,7 @@ ensure_uv_tool_pinned() {
     local installed
     installed="$(uv tool list | awk -v n="$name" '$1==n { sub(/^v/, "", $2); print $2 }')"
     [[ "$installed" == "$version" ]] && return 0
+    echo -e "${Yellow}Installing ${name}==${version} (Python ${python_version}) via uv...${Color_Off}"
     uv tool install --force --python "$python_version" "${name}==${version}" || return 2
     return 1
 }
