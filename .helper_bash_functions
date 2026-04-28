@@ -213,7 +213,7 @@ LINTER_MAX_LINE_LENGTH="140"
 
 check_linter_versions() {
     if ! [ -s /tmp/linter_versions.env ]; then
-        echo -e "${Yellow}Fetching ${LINTER_VERSIONS_URL}...${Color_Off}"
+        echo -e "${Yellow}Fetching ${LINTER_VERSIONS_URL}...${Color_Off}" >&2
         local tmp=/tmp/linter_versions.env.tmp
         if ! wget -qO "$tmp" "$LINTER_VERSIONS_URL" || ! [ -s "$tmp" ]; then
             echo -e "${Red}Failed to fetch ${LINTER_VERSIONS_URL}${Color_Off}" >&2
@@ -235,25 +235,23 @@ ensure_uv() {
     [ -f "$HOME/.local/bin/env" ] && source "$HOME/.local/bin/env"
     [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && return 0
-    echo -e "${Yellow}Installing uv...${Color_Off}"
-    curl -LSf https://astral.sh/uv/install.sh | sh || return 1
+    echo -e "${Yellow}Installing uv...${Color_Off}" >&2
+    curl -LSf https://astral.sh/uv/install.sh | sh >&2 || return 1
     command -v uv &>/dev/null
 }
 ensure_uv_tool_pinned() {
     local name="$1" version="$2" python_version="$3"
-    ensure_uv || return 2
+    ensure_uv || return 1
     local installed
     installed="$(uv tool list | awk -v n="$name" '$1==n { sub(/^v/, "", $2); print $2 }')"
     [[ "$installed" == "$version" ]] && return 0
-    echo -e "${Yellow}Installing ${name}==${version} (Python ${python_version}) via uv...${Color_Off}"
-    uv tool install --force --python "$python_version" "${name}==${version}" || return 2
-    return 1
+    echo -e "${Yellow}Installing ${name}==${version} (Python ${python_version}) via uv...${Color_Off}" >&2
+    uv tool install --force --python "$python_version" "${name}==${version}" >&2 || return 1
 }
 find_python_files_here() {
   check_find_python_files
   "$FIND_PYTHON_FILES_SCRIPT"
 }
-print_reinstall_warning() { echo -e "${Red}INFO: Just installed $1. Please re-run the last command to get the output and formatting that you're expecting.${Color_Off}"; }
 check_pylintrc() { if ! [ -f /tmp/pylintrc ]; then wget -O /tmp/pylintrc https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/pylintrc; fi; }
 check_apt_package() {
     if dpkg -l | grep -qw "$1"; then
@@ -266,48 +264,32 @@ check_apt_package() {
 }
 er_flake8_here() {
     check_pylintrc
-    check_linter_versions || return 2
-    ensure_uv_tool_pinned "flake8" "$LINTER_FLAKE8_VERSION" "$LINTER_PYTHON_VERSION"
-    local newly=$?
-    [[ $newly -eq 2 ]] && return 2
+    check_linter_versions || return 1
+    ensure_uv_tool_pinned "flake8" "$LINTER_FLAKE8_VERSION" "$LINTER_PYTHON_VERSION" || return 1
+    echo -e "${Yellow}Running flake8...${Color_Off}" >&2
     flake8 --config /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH}
-    local ret=$?
-    [[ $newly -eq 1 ]] && print_reinstall_warning "flake8"
-    return $ret
 }
 er_pylint_here() {
     check_pylintrc
-    check_linter_versions || return 2
-    ensure_uv_tool_pinned "pylint" "$LINTER_PYLINT_VERSION" "$LINTER_PYTHON_VERSION"
-    local newly=$?
-    [[ $newly -eq 2 ]] && return 2
+    check_linter_versions || return 1
+    ensure_uv_tool_pinned "pylint" "$LINTER_PYLINT_VERSION" "$LINTER_PYTHON_VERSION" || return 1
+    echo -e "${Yellow}Running pylint...${Color_Off}" >&2
     pylint --rcfile /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH} $(find_python_files_here)
-    local ret=$?
-    [[ $newly -eq 1 ]] && print_reinstall_warning "pylint"
-    return $ret
 }
 er_pylint_sorted_here() { er_pylint_here | sort -V | grep -v "\*\*\*\*\*\*\*\*"; return ${PIPESTATUS[0]}; }
 er_pylint_single_file() {
     check_pylintrc
-    check_linter_versions || return 2
-    ensure_uv_tool_pinned "pylint" "$LINTER_PYLINT_VERSION" "$LINTER_PYTHON_VERSION"
-    local newly=$?
-    [[ $newly -eq 2 ]] && return 2
+    check_linter_versions || return 1
+    ensure_uv_tool_pinned "pylint" "$LINTER_PYLINT_VERSION" "$LINTER_PYTHON_VERSION" || return 1
+    echo -e "${Yellow}Running pylint on $1...${Color_Off}" >&2
     pylint --rcfile /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH} "$1"
-    local ret=$?
-    [[ $newly -eq 1 ]] && print_reinstall_warning "pylint"
-    return $ret
 }
 er_pylint_single_file_sorted() { er_pylint_single_file "$1" | sort -V | grep -v "\*\*\*\*\*\*\*\*"; return ${PIPESTATUS[0]}; }
 er_ruff_here() {
-    check_linter_versions || return 2
-    ensure_uv_tool_pinned "ruff" "$LINTER_RUFF_VERSION" "$LINTER_PYTHON_VERSION"
-    local newly=$?
-    [[ $newly -eq 2 ]] && return 2
+    check_linter_versions || return 1
+    ensure_uv_tool_pinned "ruff" "$LINTER_RUFF_VERSION" "$LINTER_PYTHON_VERSION" || return 1
+    echo -e "${Yellow}Running ruff...${Color_Off}" >&2
     ruff check
-    local ret=$?
-    [[ $newly -eq 1 ]] && print_reinstall_warning "ruff"
-    return $ret
 }
 er_python_linters_here() { local ret=0
                            echo
