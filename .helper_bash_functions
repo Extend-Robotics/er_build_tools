@@ -210,33 +210,40 @@ update_helper_bash_functions() {
 # python linters
 LINTER_VERSIONS_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/linter_versions.env"
 LINTER_MAX_LINE_LENGTH="140"
-[ -f "$HOME/.local/bin/env" ] && source "$HOME/.local/bin/env"
-[ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
-[[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
 
 check_linter_versions() {
-    if ! [ -f /tmp/linter_versions.env ]; then
-        if ! wget -qO /tmp/linter_versions.env "$LINTER_VERSIONS_URL"; then
+    if ! [ -s /tmp/linter_versions.env ]; then
+        local tmp=/tmp/linter_versions.env.tmp
+        if ! wget -qO "$tmp" "$LINTER_VERSIONS_URL" || ! [ -s "$tmp" ]; then
             echo -e "${Red}Failed to fetch ${LINTER_VERSIONS_URL}${Color_Off}" >&2
+            rm -f "$tmp"
             return 1
         fi
+        mv "$tmp" /tmp/linter_versions.env
     fi
     source /tmp/linter_versions.env
+    local var
+    for var in LINTER_PYTHON_VERSION LINTER_PYLINT_VERSION LINTER_FLAKE8_VERSION LINTER_RUFF_VERSION; do
+        if [ -z "${!var}" ]; then
+            echo -e "${Red}${var} not set after sourcing /tmp/linter_versions.env${Color_Off}" >&2
+            return 1
+        fi
+    done
 }
 ensure_uv() {
+    [ -f "$HOME/.local/bin/env" ] && source "$HOME/.local/bin/env"
+    [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && return 0
     echo -e "${Yellow}Installing uv...${Color_Off}"
     curl -LsSf https://astral.sh/uv/install.sh | sh || return 1
-    [ -f "$HOME/.local/bin/env" ] && source "$HOME/.local/bin/env"
-    [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null
 }
 ensure_uv_tool_pinned() {
     local name="$1" version="$2" python_version="$3"
-    local installed
-    installed="$(uv tool list 2>/dev/null | awk -v n="$name" '$1==n { print $2 }')"
-    [[ "$installed" == "$version" ]] && return 0
     ensure_uv || return 2
+    local installed
+    installed="$(uv tool list | awk -v n="$name" '$1==n { sub(/^v/, "", $2); print $2 }')"
+    [[ "$installed" == "$version" ]] && return 0
     uv tool install --force --python "$python_version" "${name}==${version}" || return 2
     return 1
 }
@@ -281,14 +288,24 @@ er_pylint_sorted_here() { er_pylint_here | sort -V | grep -v "\*\*\*\*\*\*\*\*";
 er_pylint_single_file() {
     check_pylintrc
     check_linter_versions || return 2
-    ensure_uv_tool_pinned "pylint" "$LINTER_PYLINT_VERSION" "$LINTER_PYTHON_VERSION" || return 2
+    ensure_uv_tool_pinned "pylint" "$LINTER_PYLINT_VERSION" "$LINTER_PYTHON_VERSION"
+    local newly=$?
+    [[ $newly -eq 2 ]] && return 2
     pylint --rcfile /tmp/pylintrc --max-line-length ${LINTER_MAX_LINE_LENGTH} "$1"
+    local ret=$?
+    [[ $newly -eq 1 ]] && print_reinstall_warning "pylint"
+    return $ret
 }
 er_pylint_single_file_sorted() { er_pylint_single_file "$1" | sort -V | grep -v "\*\*\*\*\*\*\*\*"; return ${PIPESTATUS[0]}; }
 er_ruff_here() {
     check_linter_versions || return 2
-    ensure_uv_tool_pinned "ruff" "$LINTER_RUFF_VERSION" "$LINTER_PYTHON_VERSION" || return 2
+    ensure_uv_tool_pinned "ruff" "$LINTER_RUFF_VERSION" "$LINTER_PYTHON_VERSION"
+    local newly=$?
+    [[ $newly -eq 2 ]] && return 2
     ruff check
+    local ret=$?
+    [[ $newly -eq 1 ]] && print_reinstall_warning "ruff"
+    return $ret
 }
 er_python_linters_here() { local ret=0
                            echo
