@@ -12,6 +12,8 @@ This package gives you a `urdf2usd` CLI on PATH that works the same way on
 
 ## Install on a running host (one-liner)
 
+Installs the latest published `urdf2usd-v*` release:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/main/bin/install-urdf2usd.sh | sudo bash
 ```
@@ -70,20 +72,22 @@ no docker, no daemon, and no separate install step.
 The rootfs tarball is built and uploaded as a GitHub Release asset by:
 
 ```bash
-bin/build-and-release-urdf2usd.sh <converter-version>
+bin/build-and-release-urdf2usd.sh                     # latest urdf-usd-converter on PyPI
+bin/build-and-release-urdf2usd.sh 0.1.3               # pinned converter version
 ```
 
-That script needs `docker`, `gh` (authenticated), `tar`, and `gzip` on the
-machine running it. It tags the release `urdf2usd-v<converter-version>` and
-uploads `urdf-usd-converter-rootfs-<version>.tar.gz` as an asset, producing a
-stable public URL of the form:
+That script needs `docker`, `gh` (authenticated), `tar`, `gzip`, `curl`, and
+`python3` on the machine running it. It tags the release
+`urdf2usd-v<converter-version>` and uploads
+`urdf-usd-converter-rootfs-<version>.tar.gz` as an asset, producing a stable
+public URL of the form:
 
 ```
 https://github.com/Extend-Robotics/er_build_tools/releases/download/urdf2usd-v<version>/urdf-usd-converter-rootfs-<version>.tar.gz
 ```
 
-After cutting the release, bump `DEFAULT_VERSION` in `bin/install-urdf2usd.sh`
-if you want the one-liner to pick it up by default.
+The installer auto-discovers the latest release via the GitHub API, so no
+follow-up edits are needed after a new release is cut.
 
 ## Why bwrap (not chroot, not docker)?
 

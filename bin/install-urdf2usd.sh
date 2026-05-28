@@ -5,6 +5,8 @@
 # GitHub Release, extracts it to /opt/urdf-usd-converter-rootfs/, installs
 # bubblewrap, and drops the urdf2usd wrapper into /usr/local/bin/.
 #
+# If --version is not given, the latest urdf2usd-v* GitHub Release is used.
+#
 # Needs root (writes to /opt and /usr/local/bin). Run with:
 #   curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/main/bin/install-urdf2usd.sh | sudo bash
 # Or with a specific version:
@@ -12,11 +14,20 @@
 
 set -euo pipefail
 
-DEFAULT_VERSION="0.1.3"
-
-version="${DEFAULT_VERSION}"
+version=""
 repo="Extend-Robotics/er_build_tools"
 branch="main"
+
+fetch_latest_release_version() {
+    curl -fsSL "https://api.github.com/repos/${repo}/releases" \
+        | python3 -c '
+import json, sys
+releases = json.load(sys.stdin)
+tags = [r["tag_name"] for r in releases
+        if r["tag_name"].startswith("urdf2usd-v") and not r.get("prerelease")]
+print(tags[0][len("urdf2usd-v"):] if tags else "")
+'
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -41,12 +52,22 @@ done
     exit 1
 }
 
-for required_command in curl tar gzip apt-get; do
+for required_command in curl tar gzip apt-get python3; do
     command -v "${required_command}" >/dev/null || {
         echo "ERROR: required command not found: ${required_command}" >&2
         exit 1
     }
 done
+
+if [ -z "${version}" ]; then
+    echo "==> No version specified; fetching latest urdf2usd release from ${repo}"
+    version="$(fetch_latest_release_version)"
+    [ -n "${version}" ] || {
+        echo "ERROR: no urdf2usd-v* release found in ${repo}" >&2
+        exit 1
+    }
+    echo "==> Latest urdf2usd release: ${version}"
+fi
 
 release_tag="urdf2usd-v${version}"
 asset_name="urdf-usd-converter-rootfs-${version}.tar.gz"

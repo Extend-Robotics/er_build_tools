@@ -6,21 +6,24 @@
 # under bwrap so no docker is needed on the consumer machine.
 #
 # Run with:
-#   bin/build-and-release-urdf2usd.sh <converter-version> [--repo OWNER/REPO] [--force]
-# Example:
-#   bin/build-and-release-urdf2usd.sh 0.1.3
+#   bin/build-and-release-urdf2usd.sh [<converter-version>] [--repo OWNER/REPO] [--force]
+# If converter-version is omitted, the latest release on PyPI is used.
 
 set -euo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-Usage: build-and-release-urdf2usd.sh <converter-version> [--repo OWNER/REPO] [--force]
+Usage: build-and-release-urdf2usd.sh [<converter-version>] [--repo OWNER/REPO] [--force]
 
 Builds a docker image with urdf-usd-converter==<converter-version> on a
 python:3.12-slim base, exports its filesystem as a gzip tarball, and uploads
 it as a GitHub Release asset.
 
-Requires docker, gh (authenticated), tar, and gzip on the local machine.
+If <converter-version> is omitted, the latest release of urdf-usd-converter
+on PyPI is used.
+
+Requires docker, gh (authenticated), tar, gzip, curl, and python3 on the
+local machine.
 
 Options:
   --repo OWNER/REPO  Target GitHub repository
@@ -28,6 +31,11 @@ Options:
   --force            Delete an existing release with the same tag and re-create it
 EOF
     exit 1
+}
+
+fetch_latest_pypi_version() {
+    curl -fsSL https://pypi.org/pypi/urdf-usd-converter/json \
+        | python3 -c 'import json,sys;print(json.load(sys.stdin)["info"]["version"])'
 }
 
 converter_version=""
@@ -52,14 +60,22 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -z "${converter_version}" ] && usage
-
-for required_command in docker gh tar gzip; do
+for required_command in docker gh tar gzip curl python3; do
     command -v "${required_command}" >/dev/null || {
         echo "ERROR: required command not found in PATH: ${required_command}" >&2
         exit 1
     }
 done
+
+if [ -z "${converter_version}" ]; then
+    echo "==> No converter version specified; fetching latest from PyPI"
+    converter_version="$(fetch_latest_pypi_version)"
+    [ -n "${converter_version}" ] || {
+        echo "ERROR: failed to fetch latest urdf-usd-converter version from PyPI" >&2
+        exit 1
+    }
+    echo "==> Latest urdf-usd-converter on PyPI: ${converter_version}"
+fi
 
 gh auth status >/dev/null 2>&1 || {
     echo "ERROR: gh is not authenticated. Run 'gh auth login' first." >&2
