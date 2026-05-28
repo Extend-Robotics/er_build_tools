@@ -85,11 +85,14 @@ gh auth status >/dev/null 2>&1 || {
 script_dir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 dockerfile_path="${script_dir}/../dockerfiles/urdf_usd_converter.Dockerfile"
 dockerfile_context="${script_dir}/../dockerfiles"
+wrapper_path="${script_dir}/urdf2usd"
 
-[ -f "${dockerfile_path}" ] || {
-    echo "ERROR: dockerfile not found: ${dockerfile_path}" >&2
-    exit 1
-}
+for required_file in "${dockerfile_path}" "${wrapper_path}"; do
+    [ -f "${required_file}" ] || {
+        echo "ERROR: required file not found: ${required_file}" >&2
+        exit 1
+    }
+done
 
 release_tag="urdf2usd-v${converter_version}"
 asset_name="urdf-usd-converter-rootfs-${converter_version}.tar.gz"
@@ -126,11 +129,14 @@ asset_size_mb=$(du -m "${build_dir}/${asset_name}" | cut -f1)
 echo "==> Tarball: ${asset_name} (${asset_size_mb} MB)"
 
 echo "==> Creating release ${release_tag} in ${repo}"
-gh release create "${release_tag}" "${build_dir}/${asset_name}" \
+gh release create "${release_tag}" \
+    "${build_dir}/${asset_name}" \
+    "${wrapper_path}" \
     --repo "${repo}" \
     --title "urdf2usd rootfs ${converter_version}" \
     --notes "Rootfs containing urdf-usd-converter==${converter_version} built on python:3.12-slim (Debian bookworm, glibc 2.36) for use with the bwrap-based urdf2usd wrapper."
 
 echo
-echo "Done. Asset URL:"
+echo "Done. Asset URLs:"
 echo "  https://github.com/${repo}/releases/download/${release_tag}/${asset_name}"
+echo "  https://github.com/${repo}/releases/download/${release_tag}/urdf2usd"

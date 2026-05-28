@@ -16,7 +16,6 @@ set -euo pipefail
 
 version=""
 repo="Extend-Robotics/er_build_tools"
-branch="main"
 
 fetch_latest_release_version() {
     curl -fsSL "https://api.github.com/repos/${repo}/releases" \
@@ -33,9 +32,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --version) version="$2"; shift 2;;
         --repo)    repo="$2"; shift 2;;
-        --branch)  branch="$2"; shift 2;;
         -h|--help)
-            echo "Usage: install-urdf2usd.sh [--version X.Y.Z] [--repo OWNER/REPO] [--branch BRANCH]"
+            echo "Usage: install-urdf2usd.sh [--version X.Y.Z] [--repo OWNER/REPO]"
             exit 0
             ;;
         *)
@@ -71,8 +69,9 @@ fi
 
 release_tag="urdf2usd-v${version}"
 asset_name="urdf-usd-converter-rootfs-${version}.tar.gz"
-asset_url="https://github.com/${repo}/releases/download/${release_tag}/${asset_name}"
-wrapper_url="https://raw.githubusercontent.com/${repo}/${branch}/bin/urdf2usd"
+release_base="https://github.com/${repo}/releases/download/${release_tag}"
+asset_url="${release_base}/${asset_name}"
+wrapper_url="${release_base}/urdf2usd"
 
 rootfs_dir=/opt/urdf-usd-converter-rootfs
 wrapper_path=/usr/local/bin/urdf2usd
