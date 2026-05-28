@@ -1,4 +1,5 @@
 #!/bin/bash
+# SKIP_CHECK
 # Installer for urdf2usd on glibc-2.31 hosts (Ubuntu 20.04 / ROS Noetic).
 #
 # Downloads a pre-built rootfs containing urdf-usd-converter from a public
@@ -50,7 +51,7 @@ done
     exit 1
 }
 
-for required_command in curl tar gzip apt-get python3; do
+for required_command in curl tar gzip apt-get python3 sha256sum; do
     command -v "${required_command}" >/dev/null || {
         echo "ERROR: required command not found: ${required_command}" >&2
         exit 1
@@ -69,11 +70,15 @@ fi
 
 release_tag="urdf2usd-v${version}"
 asset_name="urdf-usd-converter-rootfs-${version}.tar.gz"
+sha256_name="${asset_name}.sha256"
 release_base="https://github.com/${repo}/releases/download/${release_tag}"
 asset_url="${release_base}/${asset_name}"
+sha256_url="${release_base}/${sha256_name}"
 wrapper_url="${release_base}/urdf2usd"
 
 rootfs_dir=/opt/urdf-usd-converter-rootfs
+new_rootfs_dir="${rootfs_dir}.new.$$"
+old_rootfs_dir="${rootfs_dir}.old.$$"
 wrapper_path=/usr/local/bin/urdf2usd
 
 if ! command -v bwrap >/dev/null; then
@@ -83,15 +88,33 @@ if ! command -v bwrap >/dev/null; then
 fi
 
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "${tmp_dir}"' EXIT
+trap 'rm -rf "${tmp_dir}" "${new_rootfs_dir}"' EXIT
 
 echo "==> Downloading rootfs ${version} from ${asset_url}"
 curl -fsSL -o "${tmp_dir}/${asset_name}" "${asset_url}"
 
-echo "==> Replacing rootfs at ${rootfs_dir}"
-rm -rf "${rootfs_dir}"
-mkdir -p "${rootfs_dir}"
-tar -xzf "${tmp_dir}/${asset_name}" -C "${rootfs_dir}"
+echo "==> Downloading checksum from ${sha256_url}"
+curl -fsSL -o "${tmp_dir}/${sha256_name}" "${sha256_url}"
+
+echo "==> Verifying tarball checksum"
+( cd "${tmp_dir}" && sha256sum -c "${sha256_name}" )
+
+echo "==> Extracting rootfs to staging dir ${new_rootfs_dir}"
+rm -rf "${new_rootfs_dir}"
+mkdir -p "${new_rootfs_dir}"
+tar -xzf "${tmp_dir}/${asset_name}" -C "${new_rootfs_dir}"
+
+[ -x "${new_rootfs_dir}/usr/local/bin/urdf_usd_converter" ] || {
+    echo "ERROR: extracted rootfs is missing /usr/local/bin/urdf_usd_converter; tarball is corrupt or wrong shape." >&2
+    exit 1
+}
+
+echo "==> Swapping rootfs into place at ${rootfs_dir}"
+if [ -d "${rootfs_dir}" ]; then
+    mv "${rootfs_dir}" "${old_rootfs_dir}"
+fi
+mv "${new_rootfs_dir}" "${rootfs_dir}"
+rm -rf "${old_rootfs_dir}"
 
 echo "==> Installing wrapper at ${wrapper_path}"
 curl -fsSL -o "${wrapper_path}" "${wrapper_url}"

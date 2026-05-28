@@ -1,4 +1,5 @@
 #!/bin/bash
+# SKIP_CHECK
 # Build the urdf2usd rootfs from a pinned urdf-usd-converter version and
 # publish it as a GitHub Release asset. The asset is consumed at install
 # time by the (consumer-side) installer, which downloads the tarball,
@@ -60,7 +61,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-for required_command in docker gh tar gzip curl python3; do
+for required_command in docker gh tar gzip curl python3 sha256sum; do
     command -v "${required_command}" >/dev/null || {
         echo "ERROR: required command not found in PATH: ${required_command}" >&2
         exit 1
@@ -96,6 +97,7 @@ done
 
 release_tag="urdf2usd-v${converter_version}"
 asset_name="urdf-usd-converter-rootfs-${converter_version}.tar.gz"
+sha256_name="${asset_name}.sha256"
 
 if gh release view "${release_tag}" --repo "${repo}" >/dev/null 2>&1; then
     if [ "${force}" -eq 1 ]; then
@@ -128,9 +130,13 @@ docker export "${builder_container}" | gzip -9 > "${build_dir}/${asset_name}"
 asset_size_mb=$(du -m "${build_dir}/${asset_name}" | cut -f1)
 echo "==> Tarball: ${asset_name} (${asset_size_mb} MB)"
 
+echo "==> Computing sha256"
+( cd "${build_dir}" && sha256sum "${asset_name}" > "${sha256_name}" )
+
 echo "==> Creating release ${release_tag} in ${repo}"
 gh release create "${release_tag}" \
     "${build_dir}/${asset_name}" \
+    "${build_dir}/${sha256_name}" \
     "${wrapper_path}" \
     --repo "${repo}" \
     --title "urdf2usd rootfs ${converter_version}" \
@@ -138,5 +144,7 @@ gh release create "${release_tag}" \
 
 echo
 echo "Done. Asset URLs:"
-echo "  https://github.com/${repo}/releases/download/${release_tag}/${asset_name}"
-echo "  https://github.com/${repo}/releases/download/${release_tag}/urdf2usd"
+release_base="https://github.com/${repo}/releases/download/${release_tag}"
+echo "  ${release_base}/${asset_name}"
+echo "  ${release_base}/${sha256_name}"
+echo "  ${release_base}/urdf2usd"
