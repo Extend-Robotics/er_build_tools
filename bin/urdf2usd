@@ -1,0 +1,48 @@
+#!/bin/bash
+# Wrapper for urdf-usd-converter. Runs the pinned converter under bwrap
+# inside a pre-installed rootfs at /opt/urdf-usd-converter-rootfs/, so a
+# glibc-2.31 host (e.g. Ubuntu 20.04 / ROS Noetic) can run a wheel that
+# requires glibc 2.35.
+#
+# Install with bin/install-urdf2usd.sh, or bake the rootfs into your image
+# at build time per docs/urdf2usd.md.
+#
+# Once the host migrates to a glibc-2.35+ base (Ubuntu 22.04+), this
+# wrapper can be removed and urdf-usd-converter installed natively (the
+# converter's CLI is `urdf_usd_converter`).
+
+set -euo pipefail
+
+rootfs=/opt/urdf-usd-converter-rootfs
+
+[ -d "${rootfs}" ] || {
+    echo "ERROR: rootfs not found at ${rootfs}." >&2
+    echo "Install with:" >&2
+    echo "  curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/main/bin/install-urdf2usd.sh | sudo bash" >&2
+    exit 1
+}
+
+command -v bwrap >/dev/null || {
+    echo "ERROR: bwrap (bubblewrap) not installed. Install with:" >&2
+    echo "  sudo apt-get install -y bubblewrap" >&2
+    exit 1
+}
+
+# Bind common data roots into the sandbox so absolute paths to URDFs,
+# meshes, and output directories resolve. Add more entries here if your
+# inputs live elsewhere (or symlink them into one of these roots).
+host_bind_args=()
+for host_dir in /cortex /home /tmp /var/tmp /mnt /media; do
+    if [ -d "${host_dir}" ]; then
+        host_bind_args+=(--bind "${host_dir}" "${host_dir}")
+    fi
+done
+
+exec bwrap \
+    --ro-bind "${rootfs}" / \
+    --proc /proc \
+    --dev /dev \
+    "${host_bind_args[@]}" \
+    --setenv PATH /usr/local/bin:/usr/bin:/bin \
+    --chdir "$(pwd)" \
+    /usr/local/bin/urdf_usd_converter "$@"
