@@ -113,8 +113,17 @@ fi
 build_dir="$(mktemp -d)"
 builder_image="urdf-usd-converter-rootfs-builder:${converter_version}"
 builder_container="urdf-usd-converter-rootfs-builder-${converter_version//./-}-$$"
+publish_phase=pre_draft
 
-trap 'docker rm -f "${builder_container}" >/dev/null 2>&1 || true; rm -rf "${build_dir}"' EXIT
+cleanup_release() {
+    docker rm -f "${builder_container}" >/dev/null 2>&1 || true
+    rm -rf "${build_dir}"
+    if [ "${publish_phase}" = draft_created ] || [ "${publish_phase}" = upload_verified ]; then
+        echo "==> Cleaning up unpublished draft release ${release_tag}" >&2
+        gh release delete "${release_tag}" --repo "${repo}" --yes --cleanup-tag >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup_release EXIT
 
 echo "==> Building ${builder_image} from ${dockerfile_path}"
 docker build \
@@ -130,17 +139,38 @@ docker export "${builder_container}" | gzip -9 > "${build_dir}/${asset_name}"
 asset_size_mb=$(du -m "${build_dir}/${asset_name}" | cut -f1)
 echo "==> Tarball: ${asset_name} (${asset_size_mb} MB)"
 
-echo "==> Computing sha256"
-( cd "${build_dir}" && sha256sum "${asset_name}" > "${sha256_name}" )
+# Stage the wrapper into build_dir so the sha256 manifest covers both
+# the tarball and the wrapper with bare basenames the installer can
+# verify with a single `sha256sum -c` in the download dir.
+cp "${wrapper_path}" "${build_dir}/urdf2usd"
 
-echo "==> Creating release ${release_tag} in ${repo}"
+echo "==> Computing sha256 manifest (rootfs + wrapper)"
+( cd "${build_dir}" && sha256sum "${asset_name}" urdf2usd > "${sha256_name}" )
+
+echo "==> Creating draft release ${release_tag} in ${repo}"
 gh release create "${release_tag}" \
     "${build_dir}/${asset_name}" \
     "${build_dir}/${sha256_name}" \
-    "${wrapper_path}" \
+    "${build_dir}/urdf2usd" \
     --repo "${repo}" \
+    --draft \
     --title "urdf2usd rootfs ${converter_version}" \
     --notes "Rootfs containing urdf-usd-converter==${converter_version} built on python:3.12-slim (Debian bookworm, glibc 2.36) for use with the bwrap-based urdf2usd wrapper."
+publish_phase=draft_created
+
+echo "==> Verifying all three assets uploaded to draft"
+uploaded_assets="$(gh release view "${release_tag}" --repo "${repo}" --json assets --jq '.assets[].name')"
+for expected in "${asset_name}" "${sha256_name}" urdf2usd; do
+    grep -qxF "${expected}" <<<"${uploaded_assets}" || {
+        echo "ERROR: expected asset ${expected} missing from draft release; aborting before publish." >&2
+        exit 1
+    }
+done
+publish_phase=upload_verified
+
+echo "==> Publishing release"
+gh release edit "${release_tag}" --repo "${repo}" --draft=false >/dev/null
+publish_phase=published
 
 echo
 echo "Done. Asset URLs:"

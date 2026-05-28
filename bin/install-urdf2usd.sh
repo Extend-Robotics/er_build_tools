@@ -80,6 +80,7 @@ rootfs_dir=/opt/urdf-usd-converter-rootfs
 new_rootfs_dir="${rootfs_dir}.new.$$"
 old_rootfs_dir="${rootfs_dir}.old.$$"
 wrapper_path=/usr/local/bin/urdf2usd
+wrapper_staging_path="${wrapper_path}.new.$$"
 
 if ! command -v bwrap >/dev/null; then
     echo "==> Installing bubblewrap"
@@ -88,19 +89,59 @@ if ! command -v bwrap >/dev/null; then
 fi
 
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "${tmp_dir}" "${new_rootfs_dir}"' EXIT
+swap_phase=pre_swap
 
+# Phase-aware cleanup so an interrupted install never leaves /opt without
+# a rootfs:
+#   pre_swap    — nothing in /opt has moved yet; just drop staging.
+#   mid_swap    — old rootfs was renamed to .old.$$ but new rename hasn't
+#                 happened or hasn't succeeded; restore the old one.
+#   swapped     — new rootfs is in place; drop the leftover .old.$$.
+install_cleanup() {
+    rm -rf "${tmp_dir}" "${wrapper_staging_path}"
+    case "${swap_phase}" in
+        pre_swap)
+            rm -rf "${new_rootfs_dir}"
+            ;;
+        mid_swap)
+            if [ ! -d "${rootfs_dir}" ] && [ -d "${old_rootfs_dir}" ]; then
+                echo "==> Install interrupted mid-swap; restoring previous rootfs at ${rootfs_dir}" >&2
+                mv "${old_rootfs_dir}" "${rootfs_dir}"
+            fi
+            rm -rf "${new_rootfs_dir}"
+            ;;
+        swapped)
+            rm -rf "${old_rootfs_dir}"
+            ;;
+    esac
+}
+trap install_cleanup EXIT
+
+# Download every release artefact into tmp_dir BEFORE touching /opt or
+# /usr/local/bin, so a partial download can never leave a half-installed
+# host. The sha256 manifest published by build-and-release-urdf2usd.sh
+# covers the rootfs tarball AND the urdf2usd wrapper; both must verify.
 echo "==> Downloading rootfs ${version} from ${asset_url}"
 curl -fsSL -o "${tmp_dir}/${asset_name}" "${asset_url}"
+
+echo "==> Downloading wrapper from ${wrapper_url}"
+curl -fsSL -o "${tmp_dir}/urdf2usd" "${wrapper_url}"
 
 echo "==> Downloading checksum from ${sha256_url}"
 curl -fsSL -o "${tmp_dir}/${sha256_name}" "${sha256_url}"
 
-echo "==> Verifying tarball checksum"
+echo "==> Verifying sha256 manifest covers both rootfs tarball and wrapper"
+for expected in "${asset_name}" urdf2usd; do
+    grep -qE "  ${expected}\$" "${tmp_dir}/${sha256_name}" || {
+        echo "ERROR: sha256 manifest does not cover ${expected}; release is malformed." >&2
+        exit 1
+    }
+done
+
+echo "==> Verifying checksums"
 ( cd "${tmp_dir}" && sha256sum -c "${sha256_name}" )
 
 echo "==> Extracting rootfs to staging dir ${new_rootfs_dir}"
-rm -rf "${new_rootfs_dir}"
 mkdir -p "${new_rootfs_dir}"
 tar -xzf "${tmp_dir}/${asset_name}" -C "${new_rootfs_dir}"
 
@@ -109,16 +150,22 @@ tar -xzf "${tmp_dir}/${asset_name}" -C "${new_rootfs_dir}"
     exit 1
 }
 
+# Prepare the wrapper on the same filesystem as ${wrapper_path} so the
+# final mv is a single rename(2) and other processes never see a
+# half-written or non-executable wrapper file.
+cp "${tmp_dir}/urdf2usd" "${wrapper_staging_path}"
+chmod +x "${wrapper_staging_path}"
+
 echo "==> Swapping rootfs into place at ${rootfs_dir}"
+swap_phase=mid_swap
 if [ -d "${rootfs_dir}" ]; then
     mv "${rootfs_dir}" "${old_rootfs_dir}"
 fi
 mv "${new_rootfs_dir}" "${rootfs_dir}"
-rm -rf "${old_rootfs_dir}"
+swap_phase=swapped
 
 echo "==> Installing wrapper at ${wrapper_path}"
-curl -fsSL -o "${wrapper_path}" "${wrapper_url}"
-chmod +x "${wrapper_path}"
+mv "${wrapper_staging_path}" "${wrapper_path}"
 
 echo
 echo "Done. Test with:"
