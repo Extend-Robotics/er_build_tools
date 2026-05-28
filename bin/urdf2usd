@@ -1,0 +1,75 @@
+#!/bin/bash
+# SKIP_CHECK
+# Wrapper for urdf-usd-converter. Runs the pinned converter under bwrap
+# inside a pre-installed rootfs at /opt/urdf-usd-converter-rootfs/, so a
+# glibc-2.31 host (e.g. Ubuntu 20.04 / ROS Noetic) can run a wheel that
+# requires glibc 2.35.
+#
+# Install with bin/install-urdf2usd.sh, or bake the rootfs into your image
+# at build time per docs/urdf2usd.md.
+#
+# Once the host migrates to a glibc-2.35+ base (Ubuntu 22.04+), this
+# wrapper can be removed and urdf-usd-converter installed natively (the
+# converter's CLI is `urdf_usd_converter`).
+
+set -euo pipefail
+
+rootfs=/opt/urdf-usd-converter-rootfs
+
+[ -d "${rootfs}" ] || {
+    echo "ERROR: rootfs not found at ${rootfs}." >&2
+    echo "Install with:" >&2
+    echo "  curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/main/bin/install-urdf2usd.sh | sudo bash" >&2
+    exit 1
+}
+
+command -v bwrap >/dev/null || {
+    echo "ERROR: bwrap (bubblewrap) not installed. Install with:" >&2
+    echo "  sudo apt-get install -y bubblewrap" >&2
+    exit 1
+}
+
+# Bind data roots into the sandbox so absolute paths to URDFs, meshes,
+# and output directories resolve. /cortex is the project data root and
+# is required; the rest are conventional Linux roots that the converter
+# may need for inputs or temp files.
+required_host_dirs=(/cortex)
+optional_host_dirs=(/home /tmp /var/tmp /mnt /media)
+
+host_bind_args=()
+for required_dir in "${required_host_dirs[@]}"; do
+    [ -d "${required_dir}" ] || {
+        echo "ERROR: required bind dir ${required_dir} not found on host." >&2
+        echo "  The sandboxed converter needs read/write access to ${required_dir} for inputs and outputs." >&2
+        echo "  Edit required_host_dirs at the top of $0 if the data root has moved." >&2
+        exit 1
+    }
+    host_bind_args+=(--bind "${required_dir}" "${required_dir}")
+done
+for optional_dir in "${optional_host_dirs[@]}"; do
+    [ -d "${optional_dir}" ] && host_bind_args+=(--bind "${optional_dir}" "${optional_dir}")
+done
+
+# Ensure the user's cwd is reachable inside the sandbox; bwrap --chdir
+# fails if the target path doesn't exist there. Bind it explicitly if
+# it isn't already covered by the lists above (e.g. user is running
+# from /opt/foo or /srv/data).
+cwd="$(pwd)"
+cwd_already_bound=0
+for bound_dir in "${required_host_dirs[@]}" "${optional_host_dirs[@]}"; do
+    case "${cwd}/" in
+        "${bound_dir}"/*) cwd_already_bound=1; break;;
+    esac
+done
+if [ "${cwd_already_bound}" -eq 0 ]; then
+    host_bind_args+=(--bind "${cwd}" "${cwd}")
+fi
+
+exec bwrap \
+    --ro-bind "${rootfs}" / \
+    --proc /proc \
+    --dev /dev \
+    "${host_bind_args[@]}" \
+    --setenv PATH /usr/local/bin:/usr/bin:/bin \
+    --chdir "${cwd}" \
+    /usr/local/bin/urdf_usd_converter "$@"
