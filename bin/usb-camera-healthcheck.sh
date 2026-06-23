@@ -71,6 +71,54 @@ verdict_for() {
   esac
 }
 
+scan_cameras() {
+  CAMERA_ROWS=()
+  local dev_dir name vid pid vidpid speed product parent entry model requirement verdict
+  for dev_dir in "$SYSFS_USB_ROOT"/*; do
+    [ -e "$dev_dir/speed" ] || continue
+    is_camera "$dev_dir" || continue
+    name="$(basename "$dev_dir")"
+    vid="$(read_attr "$dev_dir/idVendor")"
+    pid="$(read_attr "$dev_dir/idProduct")"
+    vidpid="${vid}:${pid}"
+    speed="$(read_attr "$dev_dir/speed")"
+    product="$(read_attr "$dev_dir/product")"
+    parent="$(parent_hub "$name")"
+    entry="$(lookup_model "$vidpid")"
+    if [ -n "$entry" ]; then
+      model="${entry%%|*}"
+      requirement="${entry##*|}"
+    else
+      model="?"
+      requirement=""
+    fi
+    if [ -z "$speed" ]; then
+      echo "ERROR: unreadable USB speed for $name" >&2
+      exit 3
+    fi
+    verdict="$(verdict_for "$speed" "$requirement")"
+    CAMERA_ROWS+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+      "$name" "$vidpid" "$speed" "$requirement" "$model" "$product" "$parent" "$verdict")")
+  done
+}
+
+compute_exit_code() {
+  if [ "${#CAMERA_ROWS[@]}" -eq 0 ]; then printf '2'; return 0; fi
+  local worst=0 row verdict
+  for row in "${CAMERA_ROWS[@]}"; do
+    IFS=$'\t' read -r _ _ _ _ _ _ _ verdict <<< "$row"
+    [ "$verdict" = "WILL_FAIL" ] && worst=1
+  done
+  printf '%s' "$worst"
+}
+
+run_once() {
+  scan_cameras
+  local code
+  code="$(compute_exit_code)"
+  exit "$code"
+}
+
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -99,6 +147,8 @@ parse_args() {
 
 main() {
   parse_args "$@"
+  [ -d "$SYSFS_USB_ROOT" ] || { echo "ERROR: USB sysfs path not found: $SYSFS_USB_ROOT" >&2; exit 3; }
+  run_once
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then

@@ -101,5 +101,37 @@ assert_eq "usb1 requires"      "WILL_FAIL"  "$( source "$SCRIPT"; verdict_for 12
 assert_eq "usb1 tolerant"      "WARN"       "$( source "$SCRIPT"; verdict_for 12 USB2_TOLERANT )"
 assert_eq "usb1 unknown"       "WARN"       "$( source "$SCRIPT"; verdict_for 12 '' )"
 
+# --- Task 6 tests: scan + exit codes via --quiet ---
+
+# Femto on USB2 -> WILL_FAIL -> exit 1
+r_fail="$(new_root)"; make_device "$r_fail" "2-3.4" "2bc5" "066b" "480" yes
+SYSFS_USB_ROOT="$r_fail" bash "$SCRIPT" --quiet; assert_eq "femto usb2 -> 1" 1 "$?"
+
+# Femto + Gemini both USB3 -> exit 0
+r_ok="$(new_root)"
+make_device "$r_ok" "2-3.4" "2bc5" "066b" "5000" yes
+make_device "$r_ok" "2-3.3" "2bc5" "0803" "5000" yes
+SYSFS_USB_ROOT="$r_ok" bash "$SCRIPT" --quiet; assert_eq "both usb3 -> 0" 0 "$?"
+
+# Gemini on USB2 (tolerant) -> exit 0
+r_red="$(new_root)"; make_device "$r_red" "2-3.3" "2bc5" "0803" "480" yes
+SYSFS_USB_ROOT="$r_red" bash "$SCRIPT" --quiet; assert_eq "gemini usb2 -> 0" 0 "$?"
+
+# Unknown camera on USB2, default (not strict) -> exit 0
+r_warn="$(new_root)"; make_device "$r_warn" "2-3.2" "1234" "5678" "480" yes
+SYSFS_USB_ROOT="$r_warn" bash "$SCRIPT" --quiet; assert_eq "unknown usb2 default -> 0" 0 "$?"
+
+# No cameras (only a hub) -> exit 2
+r_none="$(new_root)"; make_device "$r_none" "1-4" "0bda" "5420" "480" no
+SYSFS_USB_ROOT="$r_none" bash "$SCRIPT" --quiet; assert_eq "no cameras -> 2" 2 "$?"
+
+# Missing sysfs root -> exit 3
+SYSFS_USB_ROOT="/nonexistent/usb/root" bash "$SCRIPT" --quiet 2>/dev/null
+assert_eq "missing root -> 3" 3 "$?"
+
+# --quiet produces no stdout
+out_q="$(SYSFS_USB_ROOT="$r_ok" bash "$SCRIPT" --quiet)"
+assert_eq "quiet is silent" "" "$out_q"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
