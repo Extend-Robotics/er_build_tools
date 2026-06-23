@@ -86,6 +86,8 @@ verdict_for() {
   esac
 }
 
+# Each CAMERA_ROWS entry is field_sep-joined: name|vidpid|speed|requirement|model|product|parent|verdict
+# (kept in sync with the IFS="$field_sep" read sites in compute_exit_code, any_problem, render_report)
 scan_cameras() {
   CAMERA_ROWS=()
   local dev_dir name vid pid vidpid speed product parent entry model requirement verdict
@@ -148,12 +150,15 @@ render_report() {
       OK_REDUCED) label='OK (USB2, reduced spec)'; color="$c_green" ;;
       WILL_FAIL)  label='WILL FAIL';               color="$c_red" ;;
       WARN)       label='WARN: linked below USB3'; color="$c_yellow" ;;
+      *)          label="UNKNOWN VERDICT: $verdict"; color="$c_yellow" ;;
     esac
     shown="$model"
     [ "$model" = "?" ] && shown="$product"
     [ -n "$shown" ] && [ "$shown" != "?" ] || shown="$vidpid"
-    printf '  %b%-28s%b %5s Mbps  %b%-26s%b  [%s on %s]\n' \
-      "$c_bold" "$shown" "$c_reset" "$speed" "$color" "$label" "$c_reset" "$vidpid" "$parent"
+    local location="$vidpid"
+    [ -n "$parent" ] && location="$vidpid on $parent"
+    printf '  %b%-28s%b %5s Mbps  %b%-26s%b  [%s]\n' \
+      "$c_bold" "$shown" "$c_reset" "$speed" "$color" "$label" "$c_reset" "$location"
   done
 }
 

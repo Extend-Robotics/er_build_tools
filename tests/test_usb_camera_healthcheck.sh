@@ -206,5 +206,15 @@ watch_out="$(SYSFS_USB_ROOT="$r10" timeout 2 bash "$SCRIPT" --watch --interval 1
 assert_contains "watch renders report"  "$watch_out" "Femto Bolt"
 assert_contains "watch shows refresh"   "$watch_out" "Ctrl-C to exit"
 
+# --- Final-review fix C: empty-parent rendering has no dangling "on " ---
+rfc_root="$(new_root)"; make_device "$rfc_root" "2-1" "2bc5" "066b" "480" yes
+rep_rootport="$(SYSFS_USB_ROOT="$rfc_root" bash "$SCRIPT" || true)"
+case "$rep_rootport" in
+  *"on ]"*) dangling=yes ;;
+  *) dangling=no ;;
+esac
+assert_eq "no dangling 'on ' for root-port camera" "no" "$dangling"
+assert_contains "root-port still shows vidpid" "$rep_rootport" "2bc5:066b"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
