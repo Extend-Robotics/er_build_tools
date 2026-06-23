@@ -50,6 +50,14 @@ is_camera() {
   return 1
 }
 
+lookup_model() {
+  case "$1" in
+    2bc5:066b) printf 'Femto Bolt|REQUIRES_USB3' ;;
+    2bc5:0803) printf 'Gemini 336|USB2_TOLERANT' ;;
+    *)         printf '' ;;
+  esac
+}
+
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in

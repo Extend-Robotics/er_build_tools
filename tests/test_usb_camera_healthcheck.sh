@@ -83,5 +83,11 @@ make_device "$t3_root" "1-4"   "0bda" "5420" "480"  no    # hub (09)
 ( source "$SCRIPT"; is_camera "${t3_root}/1-4" );   assert_eq "hub not a camera" 1 "$?"
 ( source "$SCRIPT"; is_camera "${t3_root}/2-9.9" ); assert_eq "absent not a camera" 1 "$?"
 
+# --- Task 4 tests: lookup_model ---
+
+assert_eq "femto known"  "Femto Bolt|REQUIRES_USB3" "$( source "$SCRIPT"; lookup_model 2bc5:066b )"
+assert_eq "gemini known" "Gemini 336|USB2_TOLERANT" "$( source "$SCRIPT"; lookup_model 2bc5:0803 )"
+assert_eq "unknown id"   ""                          "$( source "$SCRIPT"; lookup_model 1234:5678 )"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
