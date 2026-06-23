@@ -40,6 +40,16 @@ parent_hub() {
   esac
 }
 
+is_camera() {
+  local dev_dir="$1" dev_name intf
+  dev_name="$(basename "$dev_dir")"
+  for intf in "${dev_dir}/${dev_name}":*; do
+    [ -e "$intf/bInterfaceClass" ] || continue
+    [ "$(cat "$intf/bInterfaceClass" 2>/dev/null)" = "0e" ] && return 0
+  done
+  return 1
+}
+
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in

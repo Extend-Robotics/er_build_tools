@@ -73,5 +73,15 @@ assert_eq "parent_hub nested" "2-3"  "$( source "$SCRIPT"; parent_hub "2-3.4" )"
 assert_eq "parent_hub deep"   "2-3.4" "$( source "$SCRIPT"; parent_hub "2-3.4.1" )"
 assert_eq "parent_hub root"   ""      "$( source "$SCRIPT"; parent_hub "usb2" )"
 
+# --- Task 3 tests: is_camera ---
+
+t3_root="$(new_root)"
+make_device "$t3_root" "2-3.4" "2bc5" "066b" "480"  yes   # camera (0e)
+make_device "$t3_root" "1-4"   "0bda" "5420" "480"  no    # hub (09)
+
+( source "$SCRIPT"; is_camera "${t3_root}/2-3.4" ); assert_eq "camera detected" 0 "$?"
+( source "$SCRIPT"; is_camera "${t3_root}/1-4" );   assert_eq "hub not a camera" 1 "$?"
+( source "$SCRIPT"; is_camera "${t3_root}/2-9.9" ); assert_eq "absent not a camera" 1 "$?"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
