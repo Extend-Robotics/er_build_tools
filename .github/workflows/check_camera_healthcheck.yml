@@ -1,0 +1,14 @@
+name: Check camera healthcheck
+
+on: [push]
+
+jobs:
+  test_camera_healthcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+
+      - name: run usb-camera-healthcheck tests
+        shell: bash
+        run: bash tests/test_usb_camera_healthcheck.sh
