@@ -207,6 +207,10 @@ update_helper_bash_functions() {
     echo -e "${Green}helper_bash_functions updated. Run 'source ~/.helper_bash_functions' to reload.${Color_Off}"
 }
 
+er_usb_camera_healthcheck() {
+    bash <(curl -Ls https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/usb-camera-healthcheck.sh) "$@"
+}
+
 # python linters
 LINTER_VERSIONS_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/linter_versions.env"
 LINTER_MAX_LINE_LENGTH="140"

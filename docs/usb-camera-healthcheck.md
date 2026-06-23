@@ -18,7 +18,7 @@ Watch live while swapping cables until the link is USB3:
 | Flag | Effect |
 |------|--------|
 | `-w`, `--watch` | Clear-screen redraw every interval until Ctrl-C |
-| `-i N`, `--interval N` | Watch refresh seconds (default 1) |
+| `-i N`, `--interval N` | Watch refresh seconds (default 5) |
 | `-v`, `--verbose` | Also print the full USB device tree |
 | `-q`, `--quiet` | No output; verdict via exit code only |
 | `-s`, `--strict` | Treat unknown cameras linked below USB3 as failure |

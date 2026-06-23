@@ -26,7 +26,7 @@ field_sep=$'\x1f'
 
 fail_on_unknown_usb2=false
 watch_mode=false
-watch_interval=1
+watch_interval=5
 verbose=false
 quiet=false
 
