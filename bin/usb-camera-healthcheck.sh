@@ -32,6 +32,15 @@ read_attr() {
   cat "$path" 2>/dev/null || printf ''
 }
 
+setup_colors() {
+  if [ -t 1 ]; then
+    c_red=$'\033[31m'; c_yellow=$'\033[33m'; c_green=$'\033[32m'
+    c_bold=$'\033[1m'; c_reset=$'\033[0m'
+  else
+    c_red=''; c_yellow=''; c_green=''; c_bold=''; c_reset=''
+  fi
+}
+
 parent_hub() {
   local name="$1"
   case "$name" in
@@ -112,10 +121,63 @@ compute_exit_code() {
   printf '%s' "$worst"
 }
 
+any_problem() {
+  local row verdict
+  for row in "${CAMERA_ROWS[@]}"; do
+    IFS=$'\t' read -r _ _ _ _ _ _ _ verdict <<< "$row"
+    case "$verdict" in WILL_FAIL|WARN) return 0 ;; esac
+  done
+  return 1
+}
+
+render_report() {
+  printf '%bUVC camera USB healthcheck%b\n' "$c_bold" "$c_reset"
+  local row name vidpid speed requirement model product parent verdict label color shown
+  for row in "${CAMERA_ROWS[@]}"; do
+    IFS=$'\t' read -r name vidpid speed requirement model product parent verdict <<< "$row"
+    case "$verdict" in
+      OK)         label='OK (USB3)';               color="$c_green" ;;
+      OK_REDUCED) label='OK (USB2, reduced spec)'; color="$c_green" ;;
+      WILL_FAIL)  label='WILL FAIL';               color="$c_red" ;;
+      WARN)       label='WARN: linked below USB3'; color="$c_yellow" ;;
+    esac
+    shown="$model"
+    [ "$model" = "?" ] && shown="$product"
+    [ -n "$shown" ] && [ "$shown" != "?" ] || shown="$vidpid"
+    printf '  %b%-28s%b %5s Mbps  %b%-26s%b  [%s on %s]\n' \
+      "$c_bold" "$shown" "$c_reset" "$speed" "$color" "$label" "$c_reset" "$vidpid" "$parent"
+  done
+}
+
+print_remediation() {
+  cat <<'EOF'
+
+A camera is linked below USB3. To fix:
+  1. Try a known-good USB3 cable first. The fault almost always travels with
+     the cable (a USB2/charge-only or damaged cable falls back to 480 Mbps).
+  2. Combo-hub note: a USB3 hub shows TWO faces on the bus — a "USB 3.0 Hub"
+     and a "USB 2.0 Hub" (the same physical hub). A camera sitting under the
+     "USB 2.0 Hub" face does NOT mean the hub/port is USB2-only; it means that
+     camera linked at USB2. Do not blame the hub.
+  3. Isolation test: move the camera onto a known-good port + cable to prove
+     whether it is the cable or the camera.
+  4. The driver checks USB speed only at launch — restart the ROS stack after
+     fixing the cable, or the camera node will not come up.
+EOF
+}
+
 run_once() {
   scan_cameras
   local code
   code="$(compute_exit_code)"
+  if [ "$quiet" != true ]; then
+    if [ "${#CAMERA_ROWS[@]}" -eq 0 ]; then
+      echo "No USB cameras (UVC devices) found."
+    else
+      render_report
+      any_problem && print_remediation
+    fi
+  fi
   exit "$code"
 }
 
@@ -147,6 +209,7 @@ parse_args() {
 
 main() {
   parse_args "$@"
+  setup_colors
   [ -d "$SYSFS_USB_ROOT" ] || { echo "ERROR: USB sysfs path not found: $SYSFS_USB_ROOT" >&2; exit 3; }
   run_once
 }

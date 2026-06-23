@@ -133,5 +133,26 @@ assert_eq "missing root -> 3" 3 "$?"
 out_q="$(SYSFS_USB_ROOT="$r_ok" bash "$SCRIPT" --quiet)"
 assert_eq "quiet is silent" "" "$out_q"
 
+# --- Task 7 tests: human report ---
+
+r7_fail="$(new_root)"; make_device "$r7_fail" "2-3.4" "2bc5" "066b" "480" yes
+rep_fail="$(SYSFS_USB_ROOT="$r7_fail" bash "$SCRIPT" || true)"
+assert_contains "report shows model"     "$rep_fail" "Femto Bolt"
+assert_contains "report shows WILL FAIL" "$rep_fail" "WILL FAIL"
+assert_contains "report shows speed"     "$rep_fail" "480"
+assert_contains "remediation cable"      "$rep_fail" "known-good USB3 cable"
+assert_contains "remediation restart"    "$rep_fail" "restart"
+assert_contains "remediation hub note"   "$rep_fail" "USB 2.0 Hub"
+
+r7_ok="$(new_root)"; make_device "$r7_ok" "2-3.3" "2bc5" "0803" "5000" yes
+rep_ok="$(SYSFS_USB_ROOT="$r7_ok" bash "$SCRIPT" || true)"
+assert_contains "ok report"           "$rep_ok" "OK (USB3)"
+case "$rep_ok" in *"known-good USB3 cable"*) ok_has_rem=yes ;; *) ok_has_rem=no ;; esac
+assert_eq "no remediation when all ok" "no" "$ok_has_rem"
+
+r7_none="$(new_root)"; make_device "$r7_none" "1-4" "0bda" "5420" "480" no
+rep_none="$(SYSFS_USB_ROOT="$r7_none" bash "$SCRIPT" || true)"
+assert_contains "none message" "$rep_none" "No USB cameras"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
