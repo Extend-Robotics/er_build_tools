@@ -182,5 +182,22 @@ assert_eq "strict tolerant usb2 -> 0" 0 "$?"
 SYSFS_USB_ROOT="$r9_unknown" bash "$SCRIPT" --quiet
 assert_eq "nonstrict unknown usb2 -> 0" 0 "$?"
 
+# --- Regression tests: empty fields (root-port parent) must survive parsing ---
+
+# A. Root-port Femto on USB2: name has no dot so parent is empty. The empty
+#    parent field must not collapse the row and drop the WILL_FAIL verdict.
+r_rootfail="$(new_root)"; make_device "$r_rootfail" "2-1" "2bc5" "066b" "480" yes
+SYSFS_USB_ROOT="$r_rootfail" bash "$SCRIPT" --quiet
+assert_eq "root-port femto usb2 -> 1" 1 "$?"
+
+# B. Same fixture, full report must still surface the WILL FAIL verdict.
+rep_rootfail="$(SYSFS_USB_ROOT="$r_rootfail" bash "$SCRIPT" || true)"
+assert_contains "root-port femto report WILL FAIL" "$rep_rootfail" "WILL FAIL"
+
+# C. Root-port unknown camera: verdict WARN must be parsed correctly.
+r_rootwarn="$(new_root)"; make_device "$r_rootwarn" "2-2" "1234" "5678" "480" yes
+rep_rootwarn="$(SYSFS_USB_ROOT="$r_rootwarn" bash "$SCRIPT" || true)"
+assert_contains "root-port unknown report WARN" "$rep_rootwarn" "WARN"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]

@@ -18,6 +18,12 @@ set -euo pipefail
 
 : "${SYSFS_USB_ROOT:=/sys/bus/usb/devices}"
 
+# Non-whitespace TSV delimiter (ASCII Unit Separator). Chosen so that empty
+# fields (e.g. a root-port camera's empty parent) are not collapsed by `read`,
+# which drops empty whitespace-delimited fields. It cannot appear in any sysfs
+# string (device name, vid:pid, speed, model/product name).
+field_sep=$'\x1f'
+
 fail_on_unknown_usb2=false
 watch_mode=false
 watch_interval=1
@@ -99,15 +105,14 @@ scan_cameras() {
       requirement="${entry##*|}"
     else
       model="?"
-      requirement="UNKNOWN"
+      requirement=""
     fi
     if [ -z "$speed" ]; then
       echo "ERROR: unreadable USB speed for $name" >&2
       exit 3
     fi
     verdict="$(verdict_for "$speed" "$requirement")"
-    CAMERA_ROWS+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-      "$name" "$vidpid" "$speed" "$requirement" "$model" "$product" "$parent" "$verdict")")
+    CAMERA_ROWS+=("${name}${field_sep}${vidpid}${field_sep}${speed}${field_sep}${requirement}${field_sep}${model}${field_sep}${product}${field_sep}${parent}${field_sep}${verdict}")
   done
 }
 
@@ -115,10 +120,10 @@ compute_exit_code() {
   if [ "${#CAMERA_ROWS[@]}" -eq 0 ]; then printf '2'; return 0; fi
   local worst=0 row requirement verdict
   for row in "${CAMERA_ROWS[@]}"; do
-    IFS=$'\t' read -r _ _ _ requirement _ _ _ verdict <<< "$row"
+    IFS="$field_sep" read -r _ _ _ requirement _ _ _ verdict <<< "$row"
     case "$verdict" in
       WILL_FAIL) worst=1 ;;
-      WARN) if [ "$requirement" = "UNKNOWN" ] && [ "$fail_on_unknown_usb2" = true ]; then worst=1; fi ;;
+      WARN) if [ -z "$requirement" ] && [ "$fail_on_unknown_usb2" = true ]; then worst=1; fi ;;
     esac
   done
   printf '%s' "$worst"
@@ -127,7 +132,7 @@ compute_exit_code() {
 any_problem() {
   local row verdict
   for row in "${CAMERA_ROWS[@]}"; do
-    IFS=$'\t' read -r _ _ _ _ _ _ _ verdict <<< "$row"
+    IFS="$field_sep" read -r _ _ _ _ _ _ _ verdict <<< "$row"
     case "$verdict" in WILL_FAIL|WARN) return 0 ;; esac
   done
   return 1
@@ -137,7 +142,7 @@ render_report() {
   printf '%bUVC camera USB healthcheck%b\n' "$c_bold" "$c_reset"
   local row name vidpid speed requirement model product parent verdict label color shown
   for row in "${CAMERA_ROWS[@]}"; do
-    IFS=$'\t' read -r name vidpid speed requirement model product parent verdict <<< "$row"
+    IFS="$field_sep" read -r name vidpid speed requirement model product parent verdict <<< "$row"
     case "$verdict" in
       OK)         label='OK (USB3)';               color="$c_green" ;;
       OK_REDUCED) label='OK (USB2, reduced spec)'; color="$c_green" ;;
