@@ -62,5 +62,16 @@ assert_eq "quiet+verbose exits 1" 1 "$?"
 bash "$SCRIPT" --interval 0 2>/dev/null;   assert_eq "interval 0 exits 1" 1 "$?"
 bash "$SCRIPT" --interval abc 2>/dev/null; assert_eq "interval abc exits 1" 1 "$?"
 
+# --- Task 2 tests: read_attr / parent_hub ---
+
+t2_root="$(new_root)"
+echo "5000" > "${t2_root}/speed_file"
+assert_eq "read_attr present" "5000" "$( source "$SCRIPT"; read_attr "${t2_root}/speed_file" )"
+assert_eq "read_attr absent"  ""     "$( source "$SCRIPT"; read_attr "${t2_root}/nope" )"
+
+assert_eq "parent_hub nested" "2-3"  "$( source "$SCRIPT"; parent_hub "2-3.4" )"
+assert_eq "parent_hub deep"   "2-3.4" "$( source "$SCRIPT"; parent_hub "2-3.4.1" )"
+assert_eq "parent_hub root"   ""      "$( source "$SCRIPT"; parent_hub "usb2" )"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]

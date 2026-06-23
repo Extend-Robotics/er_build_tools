@@ -26,6 +26,20 @@ quiet=false
 
 usage="Usage: usb-camera-healthcheck.sh [-w|--watch] [-i|--interval N] [-v|--verbose] [-q|--quiet] [-s|--strict] [-h|--help]"
 
+read_attr() {
+  local path="$1"
+  [ -e "$path" ] || { printf '' ; return 0; }
+  cat "$path" 2>/dev/null || printf ''
+}
+
+parent_hub() {
+  local name="$1"
+  case "$name" in
+    *.*) printf '%s' "${name%.*}" ;;
+    *)   printf '' ;;
+  esac
+}
+
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
