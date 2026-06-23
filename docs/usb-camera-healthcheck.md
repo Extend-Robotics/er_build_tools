@@ -48,6 +48,9 @@ cable and restart the ROS stack.
 | 2 | No cameras found |
 | 3 | Tool/sysfs error |
 
+`--watch` runs until interrupted (Ctrl-C) and so does not follow this exit-code
+contract; use a one-shot run for scripting/CI.
+
 ## Adding a camera model
 
 Edit the `lookup_model` table in `bin/usb-camera-healthcheck.sh` — one `case`

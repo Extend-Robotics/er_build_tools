@@ -9,6 +9,10 @@ jobs:
       - name: checkout repo
         uses: actions/checkout@v4
 
+      - name: shellcheck usb-camera-healthcheck
+        shell: bash
+        run: shellcheck bin/usb-camera-healthcheck.sh
+
       - name: run usb-camera-healthcheck tests
         shell: bash
         run: bash tests/test_usb_camera_healthcheck.sh

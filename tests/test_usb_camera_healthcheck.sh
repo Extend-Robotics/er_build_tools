@@ -43,7 +43,9 @@ make_device() {
   fi
 }
 
-new_root() { mktemp -d; }
+base_tmp="$(mktemp -d)"
+trap 'status=$?; rm -rf "$base_tmp"; exit $status' EXIT
+new_root() { mktemp -d -p "$base_tmp"; }
 
 # --- Task 1 tests: argument parsing ---
 
@@ -203,8 +205,9 @@ assert_contains "root-port unknown report WARN" "$rep_rootwarn" "WARN"
 
 r10="$(new_root)"; make_device "$r10" "2-3.4" "2bc5" "066b" "480" yes
 watch_out="$(SYSFS_USB_ROOT="$r10" timeout 2 bash "$SCRIPT" --watch --interval 1 2>/dev/null || true)"
-assert_contains "watch renders report"  "$watch_out" "Femto Bolt"
-assert_contains "watch shows refresh"   "$watch_out" "Ctrl-C to exit"
+assert_contains "watch renders report"      "$watch_out" "Femto Bolt"
+assert_contains "watch shows refresh"       "$watch_out" "Ctrl-C to exit"
+assert_contains "watch honours --interval"  "$watch_out" "refresh 1s"
 
 # --- Final-review fix C: empty-parent rendering has no dangling "on " ---
 rfc_root="$(new_root)"; make_device "$rfc_root" "2-1" "2bc5" "066b" "480" yes
@@ -215,6 +218,34 @@ case "$rep_rootport" in
 esac
 assert_eq "no dangling 'on ' for root-port camera" "no" "$dangling"
 assert_contains "root-port still shows vidpid" "$rep_rootport" "2bc5:066b"
+
+# --- Fail-fast guards: a camera with a bad sysfs read must exit 3, not mis-verdict ---
+
+# Empty speed file (exists but unreadable content) -> exit 3
+r_emptyspeed="$(new_root)"; make_device "$r_emptyspeed" "2-3.4" "2bc5" "066b" "480" yes
+: > "${r_emptyspeed}/2-3.4/speed"
+SYSFS_USB_ROOT="$r_emptyspeed" bash "$SCRIPT" --quiet 2>/dev/null
+assert_eq "empty speed -> 3" 3 "$?"
+
+# Non-numeric speed (e.g. kernel 'unknown') must fail fast, not become a WARN verdict
+r_badspeed="$(new_root)"; make_device "$r_badspeed" "2-3.4" "2bc5" "066b" "480" yes
+echo "unknown" > "${r_badspeed}/2-3.4/speed"
+SYSFS_USB_ROOT="$r_badspeed" bash "$SCRIPT" --quiet 2>/dev/null
+assert_eq "non-numeric speed -> 3" 3 "$?"
+
+# Missing vid/pid would make a known camera mis-verdict as unknown -> exit 3 instead
+r_novid="$(new_root)"; make_device "$r_novid" "2-3.4" "2bc5" "066b" "480" yes
+rm -f "${r_novid}/2-3.4/idVendor"
+SYSFS_USB_ROOT="$r_novid" bash "$SCRIPT" --quiet 2>/dev/null
+assert_eq "missing idVendor -> 3" 3 "$?"
+
+# read_attr on an existing but unreadable file must exit 3 (skipped as root, where chmod 000 is ignored)
+if [ "$(id -u)" -ne 0 ]; then
+  r_locked="$(new_root)"; echo "5000" > "${r_locked}/locked"; chmod 000 "${r_locked}/locked"
+  ( source "$SCRIPT"; read_attr "${r_locked}/locked" ) 2>/dev/null
+  assert_eq "read_attr unreadable -> 3" 3 "$?"
+  chmod 644 "${r_locked}/locked"
+fi
 
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]

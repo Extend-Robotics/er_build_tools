@@ -208,7 +208,17 @@ update_helper_bash_functions() {
 }
 
 er_usb_camera_healthcheck() {
-    bash <(curl -Ls https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/usb-camera-healthcheck.sh) "$@"
+    local script_path exit_code
+    script_path="$(mktemp)" || return 1
+    if ! curl -fsSL "https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/bin/usb-camera-healthcheck.sh" -o "$script_path"; then
+        echo "ERROR: failed to fetch usb-camera-healthcheck.sh" >&2
+        rm -f "$script_path"
+        return 1
+    fi
+    bash "$script_path" "$@"
+    exit_code=$?
+    rm -f "$script_path"
+    return "$exit_code"
 }
 
 # python linters
