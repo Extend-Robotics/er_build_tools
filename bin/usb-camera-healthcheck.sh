@@ -166,6 +166,21 @@ A camera is linked below USB3. To fix:
 EOF
 }
 
+render_tree() {
+  echo
+  echo "Full USB device tree:"
+  local d
+  for d in "$SYSFS_USB_ROOT"/*; do
+    [ -e "$d/speed" ] || continue
+    printf '  %-10s %-10s %6s Mbps  class=%-3s %s\n' \
+      "$(basename "$d")" \
+      "$(read_attr "$d/idVendor"):$(read_attr "$d/idProduct")" \
+      "$(read_attr "$d/speed")" \
+      "$(read_attr "$d/bDeviceClass")" \
+      "$(read_attr "$d/product")"
+  done | sort
+}
+
 run_once() {
   scan_cameras
   local code
@@ -177,6 +192,7 @@ run_once() {
       render_report
       any_problem && print_remediation
     fi
+    [ "$verbose" = true ] && render_tree
   fi
   exit "$code"
 }

@@ -154,5 +154,18 @@ r7_none="$(new_root)"; make_device "$r7_none" "1-4" "0bda" "5420" "480" no
 rep_none="$(SYSFS_USB_ROOT="$r7_none" bash "$SCRIPT" || true)"
 assert_contains "none message" "$rep_none" "No USB cameras"
 
+# --- Task 8 tests: --verbose tree ---
+
+r8="$(new_root)"
+make_device "$r8" "2-3.3" "2bc5" "0803" "5000" yes
+make_device "$r8" "1-4"   "0bda" "5420" "480"  no
+rep_plain="$(SYSFS_USB_ROOT="$r8" bash "$SCRIPT" || true)"
+case "$rep_plain" in *"Full USB device tree"*) plain_tree=yes ;; *) plain_tree=no ;; esac
+assert_eq "no tree without --verbose" "no" "$plain_tree"
+
+rep_v="$(SYSFS_USB_ROOT="$r8" bash "$SCRIPT" --verbose || true)"
+assert_contains "verbose tree header" "$rep_v" "Full USB device tree"
+assert_contains "verbose lists hub"   "$rep_v" "0bda:5420"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
