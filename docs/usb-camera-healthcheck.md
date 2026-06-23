@@ -3,7 +3,9 @@
 Reports the negotiated USB link speed and a verdict for every UVC camera on the
 host, using sysfs only — no `lsusb`, no `dmesg`, no root, identical on any
 Ubuntu/Jetson. Built to diagnose Orbbec depth cameras that silently fall back to
-USB2 (see `camera-usb-link-speed-healthcheck-handover.md` for the root cause).
+USB2: a USB3-required camera (e.g. the Femto Bolt) that negotiates only a USB2
+link — usually a bad or charge-only cable — aborts at driver init and never comes
+up.
 
 ## Run it (curl-bash, no install)
 
