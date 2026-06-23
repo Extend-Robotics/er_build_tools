@@ -167,5 +167,20 @@ rep_v="$(SYSFS_USB_ROOT="$r8" bash "$SCRIPT" --verbose || true)"
 assert_contains "verbose tree header" "$rep_v" "Full USB device tree"
 assert_contains "verbose lists hub"   "$rep_v" "0bda:5420"
 
+# --- Task 9 tests: --strict ---
+
+r9_unknown="$(new_root)"; make_device "$r9_unknown" "2-3.2" "1234" "5678" "480" yes
+SYSFS_USB_ROOT="$r9_unknown" bash "$SCRIPT" --quiet --strict
+assert_eq "strict unknown usb2 -> 1" 1 "$?"
+
+# strict must NOT fail a known USB2-tolerant camera (we know it is fine)
+r9_tol="$(new_root)"; make_device "$r9_tol" "2-3.3" "2bc5" "0803" "480" yes
+SYSFS_USB_ROOT="$r9_tol" bash "$SCRIPT" --quiet --strict
+assert_eq "strict tolerant usb2 -> 0" 0 "$?"
+
+# without strict, unknown usb2 stays 0
+SYSFS_USB_ROOT="$r9_unknown" bash "$SCRIPT" --quiet
+assert_eq "nonstrict unknown usb2 -> 0" 0 "$?"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]

@@ -99,7 +99,7 @@ scan_cameras() {
       requirement="${entry##*|}"
     else
       model="?"
-      requirement=""
+      requirement="UNKNOWN"
     fi
     if [ -z "$speed" ]; then
       echo "ERROR: unreadable USB speed for $name" >&2
@@ -113,10 +113,13 @@ scan_cameras() {
 
 compute_exit_code() {
   if [ "${#CAMERA_ROWS[@]}" -eq 0 ]; then printf '2'; return 0; fi
-  local worst=0 row verdict
+  local worst=0 row requirement verdict
   for row in "${CAMERA_ROWS[@]}"; do
-    IFS=$'\t' read -r _ _ _ _ _ _ _ verdict <<< "$row"
-    [ "$verdict" = "WILL_FAIL" ] && worst=1
+    IFS=$'\t' read -r _ _ _ requirement _ _ _ verdict <<< "$row"
+    case "$verdict" in
+      WILL_FAIL) worst=1 ;;
+      WARN) if [ "$requirement" = "UNKNOWN" ] && [ "$fail_on_unknown_usb2" = true ]; then worst=1; fi ;;
+    esac
   done
   printf '%s' "$worst"
 }
