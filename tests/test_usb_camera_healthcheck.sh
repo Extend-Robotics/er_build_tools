@@ -1,0 +1,279 @@
+#!/bin/bash
+# SKIP_CHECK — keep this. check_bash.yml `source`s every bash file to syntax-check
+# it (skipping those marked SKIP_CHECK). This test file has no BASH_SOURCE guard,
+# so sourcing it would run the whole suite at lint time; CI runs it explicitly via
+# check_camera_healthcheck.yml instead.
+# Self-contained tests for bin/usb-camera-healthcheck.sh. No bats dependency.
+# Builds fake sysfs trees under a temp dir (SYSFS_USB_ROOT) — no real hardware.
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT="${here}/../bin/usb-camera-healthcheck.sh"
+
+fail_count=0
+pass_count=0
+
+assert_eq() { # name expected actual
+  if [ "$2" = "$3" ]; then
+    pass_count=$((pass_count + 1))
+  else
+    fail_count=$((fail_count + 1))
+    printf 'FAIL: %s\n  expected: [%s]\n  actual:   [%s]\n' "$1" "$2" "$3" >&2
+  fi
+}
+
+assert_contains() { # name haystack needle
+  case "$2" in
+    *"$3"*) pass_count=$((pass_count + 1)) ;;
+    *) fail_count=$((fail_count + 1))
+       printf 'FAIL: %s\n  expected to contain: [%s]\n  in: [%s]\n' "$1" "$3" "$2" >&2 ;;
+  esac
+}
+
+# make_device ROOT NAME VID PID SPEED CAMERA(yes|no)
+make_device() {
+  local root="$1" name="$2" vid="$3" pid="$4" speed="$5" cam="$6"
+  local d="${root}/${name}"
+  mkdir -p "${d}/${name}:1.0"
+  echo "$vid"   > "${d}/idVendor"
+  echo "$pid"   > "${d}/idProduct"
+  echo "$speed" > "${d}/speed"
+  echo "Fake ${vid}:${pid}" > "${d}/product"
+  echo "ef"     > "${d}/bDeviceClass"
+  if [ "$cam" = yes ]; then
+    echo "0e" > "${d}/${name}:1.0/bInterfaceClass"
+  else
+    echo "09" > "${d}/${name}:1.0/bInterfaceClass"
+  fi
+}
+
+base_tmp="$(mktemp -d)"
+trap 'status=$?; rm -rf "$base_tmp"; exit $status' EXIT
+new_root() { mktemp -d -p "$base_tmp"; }
+
+# --- Task 1 tests: argument parsing ---
+
+help_out="$(bash "$SCRIPT" --help)"; help_code=$?
+assert_eq "help exits 0" 0 "$help_code"
+assert_contains "help prints usage" "$help_out" "Usage:"
+
+bash "$SCRIPT" --bogus 2>/dev/null; assert_eq "unknown flag exits 1" 1 "$?"
+bash "$SCRIPT" -h >/dev/null;       assert_eq "short help exits 0" 0 "$?"
+
+bash "$SCRIPT" --quiet --watch 2>/dev/null
+assert_eq "quiet+watch exits 1" 1 "$?"
+bash "$SCRIPT" --quiet --verbose 2>/dev/null
+assert_eq "quiet+verbose exits 1" 1 "$?"
+
+bash "$SCRIPT" --interval 0 2>/dev/null;   assert_eq "interval 0 exits 1" 1 "$?"
+bash "$SCRIPT" --interval abc 2>/dev/null; assert_eq "interval abc exits 1" 1 "$?"
+
+# --- Task 2 tests: read_attr / parent_hub ---
+
+t2_root="$(new_root)"
+echo "5000" > "${t2_root}/speed_file"
+assert_eq "read_attr present" "5000" "$( source "$SCRIPT"; read_attr "${t2_root}/speed_file" )"
+assert_eq "read_attr absent"  ""     "$( source "$SCRIPT"; read_attr "${t2_root}/nope" )"
+
+assert_eq "parent_hub nested" "2-3"  "$( source "$SCRIPT"; parent_hub "2-3.4" )"
+assert_eq "parent_hub deep"   "2-3.4" "$( source "$SCRIPT"; parent_hub "2-3.4.1" )"
+assert_eq "parent_hub root"   ""      "$( source "$SCRIPT"; parent_hub "usb2" )"
+
+# --- Task 3 tests: is_camera ---
+
+t3_root="$(new_root)"
+make_device "$t3_root" "2-3.4" "2bc5" "066b" "480"  yes   # camera (0e)
+make_device "$t3_root" "1-4"   "0bda" "5420" "480"  no    # hub (09)
+
+( source "$SCRIPT"; is_camera "${t3_root}/2-3.4" ); assert_eq "camera detected" 0 "$?"
+( source "$SCRIPT"; is_camera "${t3_root}/1-4" );   assert_eq "hub not a camera" 1 "$?"
+( source "$SCRIPT"; is_camera "${t3_root}/2-9.9" ); assert_eq "absent not a camera" 1 "$?"
+
+# --- Task 4 tests: lookup_model ---
+
+assert_eq "femto known"  "Femto Bolt|REQUIRES_USB3" "$( source "$SCRIPT"; lookup_model 2bc5:066b )"
+assert_eq "gemini known" "Gemini 336|USB2_TOLERANT" "$( source "$SCRIPT"; lookup_model 2bc5:0803 )"
+assert_eq "unknown id"   ""                          "$( source "$SCRIPT"; lookup_model 1234:5678 )"
+
+# --- Task 5 tests: verdict_for (the full matrix from the spec) ---
+
+assert_eq "usb3 requires"      "OK"         "$( source "$SCRIPT"; verdict_for 5000 REQUIRES_USB3 )"
+assert_eq "usb3 tolerant"      "OK"         "$( source "$SCRIPT"; verdict_for 10000 USB2_TOLERANT )"
+assert_eq "usb3 unknown"       "OK"         "$( source "$SCRIPT"; verdict_for 5000 '' )"
+assert_eq "usb2 requires"      "WILL_FAIL"  "$( source "$SCRIPT"; verdict_for 480 REQUIRES_USB3 )"
+assert_eq "usb2 tolerant"      "OK_REDUCED" "$( source "$SCRIPT"; verdict_for 480 USB2_TOLERANT )"
+assert_eq "usb2 unknown"       "WARN"       "$( source "$SCRIPT"; verdict_for 480 '' )"
+assert_eq "usb1 requires"      "WILL_FAIL"  "$( source "$SCRIPT"; verdict_for 12 REQUIRES_USB3 )"
+assert_eq "usb1 tolerant"      "WILL_FAIL"  "$( source "$SCRIPT"; verdict_for 12 USB2_TOLERANT )"
+assert_eq "usb1 unknown"       "WARN"       "$( source "$SCRIPT"; verdict_for 12 '' )"
+
+# --- Task 6 tests: scan + exit codes via --quiet ---
+
+# Femto on USB2 -> WILL_FAIL -> exit 1
+r_fail="$(new_root)"; make_device "$r_fail" "2-3.4" "2bc5" "066b" "480" yes
+SYSFS_USB_ROOT="$r_fail" bash "$SCRIPT" --quiet; assert_eq "femto usb2 -> 1" 1 "$?"
+
+# Femto + Gemini both USB3 -> exit 0
+r_ok="$(new_root)"
+make_device "$r_ok" "2-3.4" "2bc5" "066b" "5000" yes
+make_device "$r_ok" "2-3.3" "2bc5" "0803" "5000" yes
+SYSFS_USB_ROOT="$r_ok" bash "$SCRIPT" --quiet; assert_eq "both usb3 -> 0" 0 "$?"
+
+# Gemini on USB2 (tolerant) -> exit 0
+r_red="$(new_root)"; make_device "$r_red" "2-3.3" "2bc5" "0803" "480" yes
+SYSFS_USB_ROOT="$r_red" bash "$SCRIPT" --quiet; assert_eq "gemini usb2 -> 0" 0 "$?"
+
+# Unknown camera on USB2, default (not strict) -> exit 0
+r_warn="$(new_root)"; make_device "$r_warn" "2-3.2" "1234" "5678" "480" yes
+SYSFS_USB_ROOT="$r_warn" bash "$SCRIPT" --quiet; assert_eq "unknown usb2 default -> 0" 0 "$?"
+
+# Gemini (USB2-tolerant) dropped to USB1 (12 Mbps): below its known-good link -> WILL_FAIL -> exit 1
+r_tol_usb1="$(new_root)"; make_device "$r_tol_usb1" "2-3.3" "2bc5" "0803" "12" yes
+SYSFS_USB_ROOT="$r_tol_usb1" bash "$SCRIPT" --quiet;          assert_eq "gemini usb1 -> 1"        1 "$?"
+SYSFS_USB_ROOT="$r_tol_usb1" bash "$SCRIPT" --quiet --strict; assert_eq "gemini usb1 strict -> 1" 1 "$?"
+
+# Mixed fleet: a healthy USB3 camera must not mask a failed one (worst verdict wins)
+r_mixed="$(new_root)"
+make_device "$r_mixed" "2-3.4" "2bc5" "066b" "5000" yes   # Femto USB3 -> OK
+make_device "$r_mixed" "2-3.3" "2bc5" "066b" "480"  yes   # Femto USB2 -> WILL_FAIL
+SYSFS_USB_ROOT="$r_mixed" bash "$SCRIPT" --quiet; assert_eq "mixed ok+fail -> 1" 1 "$?"
+
+# Mixed fleet under --strict: a healthy USB3 camera must not mask a strict unknown-USB2 failure
+r_mixed_strict="$(new_root)"
+make_device "$r_mixed_strict" "2-3.4" "2bc5" "066b" "5000" yes   # Femto USB3 -> OK
+make_device "$r_mixed_strict" "2-3.2" "1234" "5678" "480"  yes   # unknown USB2 -> WARN
+SYSFS_USB_ROOT="$r_mixed_strict" bash "$SCRIPT" --quiet --strict; assert_eq "mixed ok+strict-unknown -> 1" 1 "$?"
+SYSFS_USB_ROOT="$r_mixed_strict" bash "$SCRIPT" --quiet;          assert_eq "mixed ok+unknown nonstrict -> 0" 0 "$?"
+
+# No cameras (only a hub) -> exit 2
+r_none="$(new_root)"; make_device "$r_none" "1-4" "0bda" "5420" "480" no
+SYSFS_USB_ROOT="$r_none" bash "$SCRIPT" --quiet; assert_eq "no cameras -> 2" 2 "$?"
+
+# Missing sysfs root -> exit 3
+SYSFS_USB_ROOT="/nonexistent/usb/root" bash "$SCRIPT" --quiet 2>/dev/null
+assert_eq "missing root -> 3" 3 "$?"
+
+# --quiet produces no stdout
+out_q="$(SYSFS_USB_ROOT="$r_ok" bash "$SCRIPT" --quiet)"
+assert_eq "quiet is silent" "" "$out_q"
+
+# --- Task 7 tests: human report ---
+
+r7_fail="$(new_root)"; make_device "$r7_fail" "2-3.4" "2bc5" "066b" "480" yes
+rep_fail="$(SYSFS_USB_ROOT="$r7_fail" bash "$SCRIPT" || true)"
+assert_contains "report shows model"     "$rep_fail" "Femto Bolt"
+assert_contains "report shows WILL FAIL" "$rep_fail" "WILL FAIL"
+assert_contains "report shows speed"     "$rep_fail" "480"
+assert_contains "remediation cable"      "$rep_fail" "known-good USB3 cable"
+assert_contains "remediation restart"    "$rep_fail" "restart"
+assert_contains "remediation hub note"   "$rep_fail" "USB 2.0 Hub"
+
+r7_ok="$(new_root)"; make_device "$r7_ok" "2-3.3" "2bc5" "0803" "5000" yes
+rep_ok="$(SYSFS_USB_ROOT="$r7_ok" bash "$SCRIPT" || true)"
+assert_contains "ok report"           "$rep_ok" "OK (USB3)"
+case "$rep_ok" in *"known-good USB3 cable"*) ok_has_rem=yes ;; *) ok_has_rem=no ;; esac
+assert_eq "no remediation when all ok" "no" "$ok_has_rem"
+
+r7_none="$(new_root)"; make_device "$r7_none" "1-4" "0bda" "5420" "480" no
+rep_none="$(SYSFS_USB_ROOT="$r7_none" bash "$SCRIPT" || true)"
+assert_contains "none message" "$rep_none" "No USB cameras"
+
+# --- Task 8 tests: --verbose tree ---
+
+r8="$(new_root)"
+make_device "$r8" "2-3.3" "2bc5" "0803" "5000" yes
+make_device "$r8" "1-4"   "0bda" "5420" "480"  no
+rep_plain="$(SYSFS_USB_ROOT="$r8" bash "$SCRIPT" || true)"
+case "$rep_plain" in *"Full USB device tree"*) plain_tree=yes ;; *) plain_tree=no ;; esac
+assert_eq "no tree without --verbose" "no" "$plain_tree"
+
+rep_v="$(SYSFS_USB_ROOT="$r8" bash "$SCRIPT" --verbose || true)"
+assert_contains "verbose tree header" "$rep_v" "Full USB device tree"
+assert_contains "verbose lists hub"   "$rep_v" "0bda:5420"
+
+# --- Task 9 tests: --strict ---
+
+r9_unknown="$(new_root)"; make_device "$r9_unknown" "2-3.2" "1234" "5678" "480" yes
+SYSFS_USB_ROOT="$r9_unknown" bash "$SCRIPT" --quiet --strict
+assert_eq "strict unknown usb2 -> 1" 1 "$?"
+
+# strict must NOT fail a known USB2-tolerant camera (we know it is fine)
+r9_tol="$(new_root)"; make_device "$r9_tol" "2-3.3" "2bc5" "0803" "480" yes
+SYSFS_USB_ROOT="$r9_tol" bash "$SCRIPT" --quiet --strict
+assert_eq "strict tolerant usb2 -> 0" 0 "$?"
+
+# without strict, unknown usb2 stays 0
+SYSFS_USB_ROOT="$r9_unknown" bash "$SCRIPT" --quiet
+assert_eq "nonstrict unknown usb2 -> 0" 0 "$?"
+
+# --- Regression tests: empty fields (root-port parent) must survive parsing ---
+
+# A. Root-port Femto on USB2: name has no dot so parent is empty. The empty
+#    parent field must not collapse the row and drop the WILL_FAIL verdict.
+r_rootfail="$(new_root)"; make_device "$r_rootfail" "2-1" "2bc5" "066b" "480" yes
+SYSFS_USB_ROOT="$r_rootfail" bash "$SCRIPT" --quiet
+assert_eq "root-port femto usb2 -> 1" 1 "$?"
+
+# B. Same fixture, full report must still surface the WILL FAIL verdict.
+rep_rootfail="$(SYSFS_USB_ROOT="$r_rootfail" bash "$SCRIPT" || true)"
+assert_contains "root-port femto report WILL FAIL" "$rep_rootfail" "WILL FAIL"
+
+# C. Root-port unknown camera: verdict WARN must be parsed correctly.
+r_rootwarn="$(new_root)"; make_device "$r_rootwarn" "2-2" "1234" "5678" "480" yes
+rep_rootwarn="$(SYSFS_USB_ROOT="$r_rootwarn" bash "$SCRIPT" || true)"
+assert_contains "root-port unknown report WARN" "$rep_rootwarn" "WARN"
+
+# --- Task 10 tests: --watch (single frame under timeout) ---
+
+r10="$(new_root)"; make_device "$r10" "2-3.4" "2bc5" "066b" "480" yes
+watch_out="$(SYSFS_USB_ROOT="$r10" timeout 2 bash "$SCRIPT" --watch --interval 1 2>/dev/null || true)"
+assert_contains "watch renders report"      "$watch_out" "Femto Bolt"
+assert_contains "watch shows refresh"       "$watch_out" "Ctrl-C to exit"
+assert_contains "watch honours --interval"  "$watch_out" "refresh 1s"
+
+# --- Final-review fix C: empty-parent rendering has no dangling "on " ---
+rfc_root="$(new_root)"; make_device "$rfc_root" "2-1" "2bc5" "066b" "480" yes
+rep_rootport="$(SYSFS_USB_ROOT="$rfc_root" bash "$SCRIPT" || true)"
+case "$rep_rootport" in
+  *"on ]"*) dangling=yes ;;
+  *) dangling=no ;;
+esac
+assert_eq "no dangling 'on ' for root-port camera" "no" "$dangling"
+assert_contains "root-port still shows vidpid" "$rep_rootport" "2bc5:066b"
+
+# --- Fail-fast guards: a camera with a bad sysfs read must exit 3, not mis-verdict ---
+
+# Empty speed file (exists but unreadable content) -> exit 3
+r_emptyspeed="$(new_root)"; make_device "$r_emptyspeed" "2-3.4" "2bc5" "066b" "480" yes
+: > "${r_emptyspeed}/2-3.4/speed"
+SYSFS_USB_ROOT="$r_emptyspeed" bash "$SCRIPT" --quiet 2>/dev/null
+assert_eq "empty speed -> 3" 3 "$?"
+
+# Missing speed file entirely: a confirmed camera must not be silently dropped
+# (reported as "no cameras") just because its speed attribute is absent -> exit 3
+r_nospeed="$(new_root)"; make_device "$r_nospeed" "2-3.4" "2bc5" "066b" "480" yes
+rm -f "${r_nospeed}/2-3.4/speed"
+SYSFS_USB_ROOT="$r_nospeed" bash "$SCRIPT" --quiet 2>/dev/null
+assert_eq "missing speed file -> 3" 3 "$?"
+
+# Non-numeric speed (e.g. kernel 'unknown') must fail fast, not become a WARN verdict
+r_badspeed="$(new_root)"; make_device "$r_badspeed" "2-3.4" "2bc5" "066b" "480" yes
+echo "unknown" > "${r_badspeed}/2-3.4/speed"
+SYSFS_USB_ROOT="$r_badspeed" bash "$SCRIPT" --quiet 2>/dev/null
+assert_eq "non-numeric speed -> 3" 3 "$?"
+
+# Missing vid/pid would make a known camera mis-verdict as unknown -> exit 3 instead
+r_novid="$(new_root)"; make_device "$r_novid" "2-3.4" "2bc5" "066b" "480" yes
+rm -f "${r_novid}/2-3.4/idVendor"
+SYSFS_USB_ROOT="$r_novid" bash "$SCRIPT" --quiet 2>/dev/null
+assert_eq "missing idVendor -> 3" 3 "$?"
+
+# read_attr on an existing but unreadable file must exit 3 (skipped as root, where chmod 000 is ignored)
+if [ "$(id -u)" -ne 0 ]; then
+  r_locked="$(new_root)"; echo "5000" > "${r_locked}/locked"; chmod 000 "${r_locked}/locked"
+  ( source "$SCRIPT"; read_attr "${r_locked}/locked" ) 2>/dev/null
+  assert_eq "read_attr unreadable -> 3" 3 "$?"
+  chmod 644 "${r_locked}/locked"
+fi
+
+printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
+[ "$fail_count" -eq 0 ]
