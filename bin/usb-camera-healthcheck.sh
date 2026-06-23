@@ -5,9 +5,10 @@
 # Verdict per camera:
 #   OK            linked at USB3 (>=5000 Mbps)
 #   OK (reduced)  linked at USB2 (480 Mbps) and the model is known to tolerate it
-#   WILL FAIL     linked below USB3 and the model REQUIRES USB3 (driver aborts)
-#   WARN          linked below USB3 with requirement unknown, OR a known
-#                 USB2-tolerant model linked below USB2 (e.g. 12 Mbps)
+#   WILL FAIL     linked below the model's required link (driver aborts): a model
+#                 that REQUIRES USB3 linked below USB3, or a known USB2-tolerant
+#                 model linked below USB2 (e.g. 12 Mbps)
+#   WARN          linked below USB3 with requirement unknown
 #
 # Needs no root. Run on a bare Jetson with:
 #   bash <(curl -Ls https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/usb-camera-healthcheck.sh)
@@ -60,7 +61,7 @@ is_camera() {
   dev_name="$(basename "$dev_dir")"
   for interface_path in "${dev_dir}/${dev_name}":*; do
     [ -e "$interface_path/bInterfaceClass" ] || continue
-    interface_class="$(read_attr "$interface_path/bInterfaceClass")" || exit 3
+    interface_class="$(read_attr "$interface_path/bInterfaceClass")"
     [ "$interface_class" = "0e" ] && return 0
   done
   return 1
@@ -82,20 +83,23 @@ verdict_for() {
   fi
   case "$requirement" in
     REQUIRES_USB3) printf 'WILL_FAIL' ;;
-    USB2_TOLERANT) if [ "$speed" -eq 480 ]; then printf 'OK_REDUCED'; else printf 'WARN'; fi ;;
+    USB2_TOLERANT) if [ "$speed" -ge 480 ]; then printf 'OK_REDUCED'; else printf 'WILL_FAIL'; fi ;;
     *)             printf 'WARN' ;;
   esac
 }
 
 # Each CAMERA_ROWS entry is field_sep-joined: name|vidpid|speed|requirement|model|product|parent
-# Verdict is derived (never stored) via verdict_for at each read site, so it cannot drift from
-# speed/requirement. Field order is kept in sync with the IFS="$field_sep" read sites in
-# compute_exit_code, any_problem, render_report.
+# Verdict is derived (never stored) via verdict_for, so it cannot drift from speed/requirement.
+# Every site that unpacks a row with `IFS="$field_sep" read` must use this exact field order
+# (row_verdict and render_report).
 scan_cameras() {
   CAMERA_ROWS=()
   local dev_dir name vid pid vidpid speed product parent entry model requirement
   for dev_dir in "$SYSFS_USB_ROOT"/*; do
-    [ -e "$dev_dir/speed" ] || continue
+    # Filter by the actual predicate (is this a UVC camera?), not by the presence
+    # of an attribute we later read. Gating on speed/idVendor presence would
+    # silently drop a camera missing that attribute; instead a confirmed camera
+    # with an unreadable speed or id reaches the fail-fast checks below.
     is_camera "$dev_dir" || continue
     name="$(basename "$dev_dir")"
     vid="$(read_attr "$dev_dir/idVendor")"
@@ -126,16 +130,26 @@ scan_cameras() {
   done
 }
 
+# Parse one CAMERA_ROWS entry and print its derived verdict. The single
+# field_sep read site shared by compute_exit_code and any_problem.
+row_verdict() {
+  local speed requirement
+  IFS="$field_sep" read -r _ _ speed requirement _ _ _ <<< "$1"
+  verdict_for "$speed" "$requirement"
+}
+
 compute_exit_code() {
   if [ "${#CAMERA_ROWS[@]}" -eq 0 ]; then printf '2'; return 0; fi
-  local worst=0 row speed requirement verdict
+  local worst=0 row verdict
   for row in "${CAMERA_ROWS[@]}"; do
-    IFS="$field_sep" read -r _ _ speed requirement _ _ _ <<< "$row"
-    verdict="$(verdict_for "$speed" "$requirement")"
+    verdict="$(row_verdict "$row")"
+    # WARN only arises when a camera's requirement is unknown (verdict_for maps
+    # every known requirement to OK/OK_REDUCED/WILL_FAIL), so --strict escalates
+    # exactly the unknown-camera-below-USB3 case here.
     case "$verdict" in
       OK|OK_REDUCED) ;;
       WILL_FAIL) worst=1 ;;
-      WARN) if [ -z "$requirement" ] && [ "$fail_on_unknown_usb2" = true ]; then worst=1; fi ;;
+      WARN) if [ "$fail_on_unknown_usb2" = true ]; then worst=1; fi ;;
       *) echo "ERROR: internal: unexpected verdict '$verdict'" >&2; exit 3 ;;
     esac
   done
@@ -143,11 +157,14 @@ compute_exit_code() {
 }
 
 any_problem() {
-  local row speed requirement verdict
+  local row verdict
   for row in "${CAMERA_ROWS[@]}"; do
-    IFS="$field_sep" read -r _ _ speed requirement _ _ _ <<< "$row"
-    verdict="$(verdict_for "$speed" "$requirement")"
-    case "$verdict" in WILL_FAIL|WARN) return 0 ;; esac
+    verdict="$(row_verdict "$row")"
+    case "$verdict" in
+      WILL_FAIL|WARN) return 0 ;;
+      OK|OK_REDUCED) ;;
+      *) echo "ERROR: internal: unexpected verdict '$verdict'" >&2; exit 3 ;;
+    esac
   done
   return 1
 }
@@ -180,7 +197,7 @@ print_remediation() {
 
 A camera is linked below USB3. To fix:
   1. Try a known-good USB3 cable first. The fault almost always travels with
-     the cable (a USB2/charge-only or damaged cable falls back to 480 Mbps).
+     the cable (a USB2/charge-only or damaged cable drops to a slower link).
   2. Combo-hub note: a USB3 hub shows TWO faces on the bus — a "USB 3.0 Hub"
      and a "USB 2.0 Hub" (the same physical hub). A camera sitting under the
      "USB 2.0 Hub" face does NOT mean the hub/port is USB2-only; it means that

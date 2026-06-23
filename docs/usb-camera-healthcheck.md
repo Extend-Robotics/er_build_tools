@@ -34,10 +34,12 @@ Watch live while swapping cables until the link is USB3:
 |------|---------------------|---------------------|----------------|
 | USB3 (≥5000) | OK | OK | OK |
 | USB2 (480) | WILL FAIL | OK (reduced spec) | WARN |
-| USB1 (12) | WILL FAIL | WARN | WARN |
+| USB1 (12) | WILL FAIL | WILL FAIL | WARN |
 
 A `WILL FAIL` camera (e.g. Femto Bolt on USB2) aborts at driver init — fix the
-cable and restart the ROS stack.
+cable and restart the ROS stack. A known USB2-tolerant camera that has dropped
+*below* USB2 (e.g. 12 Mbps) is also `WILL FAIL`: it is degraded below its
+known-good link, which is a genuine cable fault, not a tolerable reduction.
 
 ## Exit codes
 

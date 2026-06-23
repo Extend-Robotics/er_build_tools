@@ -1,5 +1,8 @@
 #!/bin/bash
-# SKIP_CHECK
+# SKIP_CHECK — keep this. check_bash.yml `source`s every bash file to syntax-check
+# it (skipping those marked SKIP_CHECK). This test file has no BASH_SOURCE guard,
+# so sourcing it would run the whole suite at lint time; CI runs it explicitly via
+# check_camera_healthcheck.yml instead.
 # Self-contained tests for bin/usb-camera-healthcheck.sh. No bats dependency.
 # Builds fake sysfs trees under a temp dir (SYSFS_USB_ROOT) — no real hardware.
 
@@ -100,7 +103,7 @@ assert_eq "usb2 requires"      "WILL_FAIL"  "$( source "$SCRIPT"; verdict_for 48
 assert_eq "usb2 tolerant"      "OK_REDUCED" "$( source "$SCRIPT"; verdict_for 480 USB2_TOLERANT )"
 assert_eq "usb2 unknown"       "WARN"       "$( source "$SCRIPT"; verdict_for 480 '' )"
 assert_eq "usb1 requires"      "WILL_FAIL"  "$( source "$SCRIPT"; verdict_for 12 REQUIRES_USB3 )"
-assert_eq "usb1 tolerant"      "WARN"       "$( source "$SCRIPT"; verdict_for 12 USB2_TOLERANT )"
+assert_eq "usb1 tolerant"      "WILL_FAIL"  "$( source "$SCRIPT"; verdict_for 12 USB2_TOLERANT )"
 assert_eq "usb1 unknown"       "WARN"       "$( source "$SCRIPT"; verdict_for 12 '' )"
 
 # --- Task 6 tests: scan + exit codes via --quiet ---
@@ -122,6 +125,24 @@ SYSFS_USB_ROOT="$r_red" bash "$SCRIPT" --quiet; assert_eq "gemini usb2 -> 0" 0 "
 # Unknown camera on USB2, default (not strict) -> exit 0
 r_warn="$(new_root)"; make_device "$r_warn" "2-3.2" "1234" "5678" "480" yes
 SYSFS_USB_ROOT="$r_warn" bash "$SCRIPT" --quiet; assert_eq "unknown usb2 default -> 0" 0 "$?"
+
+# Gemini (USB2-tolerant) dropped to USB1 (12 Mbps): below its known-good link -> WILL_FAIL -> exit 1
+r_tol_usb1="$(new_root)"; make_device "$r_tol_usb1" "2-3.3" "2bc5" "0803" "12" yes
+SYSFS_USB_ROOT="$r_tol_usb1" bash "$SCRIPT" --quiet;          assert_eq "gemini usb1 -> 1"        1 "$?"
+SYSFS_USB_ROOT="$r_tol_usb1" bash "$SCRIPT" --quiet --strict; assert_eq "gemini usb1 strict -> 1" 1 "$?"
+
+# Mixed fleet: a healthy USB3 camera must not mask a failed one (worst verdict wins)
+r_mixed="$(new_root)"
+make_device "$r_mixed" "2-3.4" "2bc5" "066b" "5000" yes   # Femto USB3 -> OK
+make_device "$r_mixed" "2-3.3" "2bc5" "066b" "480"  yes   # Femto USB2 -> WILL_FAIL
+SYSFS_USB_ROOT="$r_mixed" bash "$SCRIPT" --quiet; assert_eq "mixed ok+fail -> 1" 1 "$?"
+
+# Mixed fleet under --strict: a healthy USB3 camera must not mask a strict unknown-USB2 failure
+r_mixed_strict="$(new_root)"
+make_device "$r_mixed_strict" "2-3.4" "2bc5" "066b" "5000" yes   # Femto USB3 -> OK
+make_device "$r_mixed_strict" "2-3.2" "1234" "5678" "480"  yes   # unknown USB2 -> WARN
+SYSFS_USB_ROOT="$r_mixed_strict" bash "$SCRIPT" --quiet --strict; assert_eq "mixed ok+strict-unknown -> 1" 1 "$?"
+SYSFS_USB_ROOT="$r_mixed_strict" bash "$SCRIPT" --quiet;          assert_eq "mixed ok+unknown nonstrict -> 0" 0 "$?"
 
 # No cameras (only a hub) -> exit 2
 r_none="$(new_root)"; make_device "$r_none" "1-4" "0bda" "5420" "480" no
@@ -226,6 +247,13 @@ r_emptyspeed="$(new_root)"; make_device "$r_emptyspeed" "2-3.4" "2bc5" "066b" "4
 : > "${r_emptyspeed}/2-3.4/speed"
 SYSFS_USB_ROOT="$r_emptyspeed" bash "$SCRIPT" --quiet 2>/dev/null
 assert_eq "empty speed -> 3" 3 "$?"
+
+# Missing speed file entirely: a confirmed camera must not be silently dropped
+# (reported as "no cameras") just because its speed attribute is absent -> exit 3
+r_nospeed="$(new_root)"; make_device "$r_nospeed" "2-3.4" "2bc5" "066b" "480" yes
+rm -f "${r_nospeed}/2-3.4/speed"
+SYSFS_USB_ROOT="$r_nospeed" bash "$SCRIPT" --quiet 2>/dev/null
+assert_eq "missing speed file -> 3" 3 "$?"
 
 # Non-numeric speed (e.g. kernel 'unknown') must fail fast, not become a WARN verdict
 r_badspeed="$(new_root)"; make_device "$r_badspeed" "2-3.4" "2bc5" "066b" "480" yes

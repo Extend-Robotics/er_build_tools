@@ -209,6 +209,10 @@ update_helper_bash_functions() {
 
 er_usb_camera_healthcheck() {
     local script_path exit_code
+    if [ -z "${THIS_SCRIPT_BRANCH:-}" ]; then
+        echo "ERROR: THIS_SCRIPT_BRANCH is unset; cannot determine which branch to fetch" >&2
+        return 1
+    fi
     script_path="$(mktemp)" || return 1
     if ! curl -fsSL "https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/bin/usb-camera-healthcheck.sh" -o "$script_path"; then
         echo "ERROR: failed to fetch usb-camera-healthcheck.sh" >&2
