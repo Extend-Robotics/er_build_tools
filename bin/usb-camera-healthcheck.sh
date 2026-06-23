@@ -189,6 +189,22 @@ render_tree() {
   done | sort
 }
 
+watch_loop() {
+  while true; do
+    printf '\033[H\033[2J'
+    scan_cameras
+    if [ "${#CAMERA_ROWS[@]}" -eq 0 ]; then
+      echo "No USB cameras (UVC devices) found."
+    else
+      render_report
+      any_problem && print_remediation
+    fi
+    [ "$verbose" = true ] && render_tree
+    printf '\n(refresh %ss — Ctrl-C to exit)\n' "$watch_interval"
+    sleep "$watch_interval"
+  done
+}
+
 run_once() {
   scan_cameras
   local code
@@ -235,6 +251,9 @@ main() {
   parse_args "$@"
   setup_colors
   [ -d "$SYSFS_USB_ROOT" ] || { echo "ERROR: USB sysfs path not found: $SYSFS_USB_ROOT" >&2; exit 3; }
+  if [ "$watch_mode" = true ]; then
+    watch_loop
+  fi
   run_once
 }
 

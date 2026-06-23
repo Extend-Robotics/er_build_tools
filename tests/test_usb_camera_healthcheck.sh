@@ -199,5 +199,12 @@ r_rootwarn="$(new_root)"; make_device "$r_rootwarn" "2-2" "1234" "5678" "480" ye
 rep_rootwarn="$(SYSFS_USB_ROOT="$r_rootwarn" bash "$SCRIPT" || true)"
 assert_contains "root-port unknown report WARN" "$rep_rootwarn" "WARN"
 
+# --- Task 10 tests: --watch (single frame under timeout) ---
+
+r10="$(new_root)"; make_device "$r10" "2-3.4" "2bc5" "066b" "480" yes
+watch_out="$(SYSFS_USB_ROOT="$r10" timeout 2 bash "$SCRIPT" --watch --interval 1 2>/dev/null || true)"
+assert_contains "watch renders report"  "$watch_out" "Femto Bolt"
+assert_contains "watch shows refresh"   "$watch_out" "Ctrl-C to exit"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
