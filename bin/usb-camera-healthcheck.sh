@@ -58,6 +58,19 @@ lookup_model() {
   esac
 }
 
+verdict_for() {
+  local speed="$1" requirement="$2"
+  if [ "$speed" -ge 5000 ]; then
+    printf 'OK'
+    return 0
+  fi
+  case "$requirement" in
+    REQUIRES_USB3) printf 'WILL_FAIL' ;;
+    USB2_TOLERANT) if [ "$speed" -eq 480 ]; then printf 'OK_REDUCED'; else printf 'WARN'; fi ;;
+    *)             printf 'WARN' ;;
+  esac
+}
+
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in

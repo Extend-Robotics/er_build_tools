@@ -89,5 +89,17 @@ assert_eq "femto known"  "Femto Bolt|REQUIRES_USB3" "$( source "$SCRIPT"; lookup
 assert_eq "gemini known" "Gemini 336|USB2_TOLERANT" "$( source "$SCRIPT"; lookup_model 2bc5:0803 )"
 assert_eq "unknown id"   ""                          "$( source "$SCRIPT"; lookup_model 1234:5678 )"
 
+# --- Task 5 tests: verdict_for (the full matrix from the spec) ---
+
+assert_eq "usb3 requires"      "OK"         "$( source "$SCRIPT"; verdict_for 5000 REQUIRES_USB3 )"
+assert_eq "usb3 tolerant"      "OK"         "$( source "$SCRIPT"; verdict_for 10000 USB2_TOLERANT )"
+assert_eq "usb3 unknown"       "OK"         "$( source "$SCRIPT"; verdict_for 5000 '' )"
+assert_eq "usb2 requires"      "WILL_FAIL"  "$( source "$SCRIPT"; verdict_for 480 REQUIRES_USB3 )"
+assert_eq "usb2 tolerant"      "OK_REDUCED" "$( source "$SCRIPT"; verdict_for 480 USB2_TOLERANT )"
+assert_eq "usb2 unknown"       "WARN"       "$( source "$SCRIPT"; verdict_for 480 '' )"
+assert_eq "usb1 requires"      "WILL_FAIL"  "$( source "$SCRIPT"; verdict_for 12 REQUIRES_USB3 )"
+assert_eq "usb1 tolerant"      "WARN"       "$( source "$SCRIPT"; verdict_for 12 USB2_TOLERANT )"
+assert_eq "usb1 unknown"       "WARN"       "$( source "$SCRIPT"; verdict_for 12 '' )"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
