@@ -209,8 +209,9 @@ update_helper_bash_functions() {
 
 _fetch_and_call_remote_script() {
     # $1 = repo-relative script path; remaining args are passed to the script.
-    # Temp file rather than process substitution so the script keeps the
-    # terminal on stdin — interactive prompts (ssh credentials) still work.
+    # Temp file rather than piping curl into bash: the script keeps the terminal
+    # on stdin (interactive ssh prompts work), and the fetch's success is checked
+    # before anything executes — a truncated stream can never half-run.
     local script_rel_path="$1" script_path exit_code
     shift
     if [ -z "${THIS_SCRIPT_BRANCH:-}" ]; then
@@ -219,7 +220,7 @@ _fetch_and_call_remote_script() {
     fi
     script_path="$(mktemp)" || return 1
     if ! curl -fsSL "https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/${script_rel_path}" -o "$script_path"; then
-        echo "ERROR: failed to fetch ${script_rel_path}" >&2
+        echo "ERROR: failed to fetch ${script_rel_path} (branch ${THIS_SCRIPT_BRANCH})" >&2
         rm -f "$script_path"
         return 1
     fi
