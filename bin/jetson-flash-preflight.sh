@@ -42,8 +42,9 @@ trap 'rm -f "$COMPANION_TMP"' EXIT
 # Colors: only when stdout is a terminal, and honouring NO_COLOR
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     C_GRN=$'\033[32m'; C_YLW=$'\033[33m'; C_RED=$'\033[31m'; C_BLD=$'\033[1m'; C_OFF=$'\033[0m'
+    C_ORG=$'\033[1;38;5;208m'   # bold orange (256-color) for the not-in-recovery banner
 else
-    C_GRN=""; C_YLW=""; C_RED=""; C_BLD=""; C_OFF=""
+    C_GRN=""; C_YLW=""; C_RED=""; C_BLD=""; C_OFF=""; C_ORG=""
 fi
 ok()   { echo "  ${C_GRN}[OK]${C_OFF}   $*"; }
 warn() { echo "  ${C_YLW}[WARN]${C_OFF} $*"; }
@@ -59,6 +60,24 @@ require_sshpass() {
     command -v sshpass >/dev/null && return 0
     warn "sshpass is not installed (sudo apt-get install sshpass) — cannot use password ssh auth"
     return 1
+}
+
+# flash.sh can only start from forced recovery (RCM); any other detected state
+# means "not flashable yet" — make that impossible to miss. Purely visual: the
+# exit code still reports the module × tree verdict.
+warn_not_in_recovery() {        # $1 = detected NVIDIA pid ("" = none)
+    [ "$1" = "7023" ] && return 0
+    local state="Jetson is NOT in FORCED RECOVERY mode"
+    [ -z "$1" ] && state="NO Jetson detected — flashing needs one in FORCED RECOVERY mode"
+    echo
+    echo "  ${C_ORG}██████████████████████████████████████████████████████████████████${C_OFF}"
+    echo "  ${C_ORG}██  $state${C_OFF}"
+    echo "  ${C_ORG}██  flash.sh can only start from forced recovery (RCM). To get there:${C_OFF}"
+    echo "  ${C_ORG}██    - from booted L4T:    sudo reboot forced-recovery${C_OFF}"
+    echo "  ${C_ORG}██    - by hand (AGX Orin): hold FORCE RECOVERY (middle button),${C_OFF}"
+    echo "  ${C_ORG}██      press+release RESET, then release FORCE RECOVERY${C_OFF}"
+    echo "  ${C_ORG}██████████████████████████████████████████████████████████████████${C_OFF}"
+    echo
 }
 
 read_sectors_verdict() {        # $1 = sector count
@@ -238,6 +257,7 @@ else
 fi
 
 # ---------- 3. verdict ----------
+warn_not_in_recovery "$pid"
 hdr "== 3. Verdict =="
 case "$module_state:$tree_state" in
     post-pcn:patched)  ok "GO — module needs the patch and the tree has it. Flash away."; exit 0;;

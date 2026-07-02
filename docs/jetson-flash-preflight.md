@@ -78,6 +78,11 @@ absent. It also works standalone on any booted Jetson:
 fail-closed for `&&` gating (indistinguishable from DO NOT FLASH only if you
 `case` on `$?`).
 
+When the connected Jetson is in any state other than forced recovery (or absent),
+a large orange banner above the verdict reminds you that `flash.sh` cannot start
+yet and how to enter recovery. It is purely visual — the exit code still reports
+the module × tree verdict.
+
 Automation can gate on the exit code (`L4T` exported in your shell, same
 default as the script's):
 

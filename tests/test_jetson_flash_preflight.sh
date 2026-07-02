@@ -276,5 +276,17 @@ l4t_sku4="$base_tmp/l4t_sku4"; make_l4t "$l4t_sku4" patched "Board ID(3701) vers
 out=$(FAKE_LSUSB_LINE="$LSUSB_RECOVERY" run_preflight "$l4t_sku4" "$COMPANION_REAL"); rc=$?
 assert_eq "recovery unpadded sku(4) + patched -> 0" 0 "$rc"
 
+# ---------- 9. not-in-recovery banner (visual only; exit codes unaffected) ----------
+
+out=$(FAKE_LSUSB_LINE="$LSUSB_BOOTED" run_preflight "$l4t_post_stock" "$comp_post" 2>&1); rc=$?
+assert_contains "banner when booted L4T" "$out" "NOT in FORCED RECOVERY"
+assert_eq       "banner does not change exit code" 1 "$rc"
+
+out=$(FAKE_LSUSB_LINE="" run_preflight "$l4t_post_stock" "$COMPANION_REAL" 2>&1)
+assert_contains "banner variant when no device" "$out" "flashing needs one in FORCED RECOVERY"
+
+out=$(FAKE_LSUSB_LINE="$LSUSB_RECOVERY" run_preflight "$l4t_post_patch" "$COMPANION_REAL" 2>&1)
+assert_not_contains "no banner in forced recovery" "$out" "can only start from forced recovery"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
