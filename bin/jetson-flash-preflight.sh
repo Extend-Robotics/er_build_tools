@@ -191,15 +191,26 @@ case "$pid" in
         ;;
     7023)
         ok "state: FORCED RECOVERY, AGX Orin ($usbline)"
-        echo "         querying module EEPROM via RCM (needs sudo, ~15s)..."
-        # shellcheck disable=SC2015  # || true intentionally swallows any failure; parsed below
-        rcm_out=$(cd "$L4T" && timeout 90 sudo ./nvautoflash.sh --print_boardid 2>&1 || true)
-        boardline=$(echo "$rcm_out" | grep -oE 'Board ID\([0-9]+\) version\([0-9]+\) sku\([0-9]+\) revision\([^)]*\)' | head -1)
-        if [ -n "$boardline" ]; then
-            boardid=$(echo "$boardline" | sed -E 's/Board ID\(([0-9]+)\).*/\1/')
-            fab=$(echo "$boardline"     | sed -E 's/.*version\(([0-9]+)\).*/\1/')
-            sku=$(echo "$boardline"     | sed -E 's/.*sku\(([0-9]+)\).*/\1/')
-            ok "EEPROM: $boardline"
+        echo "         querying module EEPROM via RCM (needs sudo, ~15s; you may be prompted for your password)..."
+        if sudo -v; then
+            # --foreground: timeout otherwise runs the command in its own process
+            # group, so sudo's tty password prompt freezes the group with SIGTTIN —
+            # the script appears to hang and no prompt is ever shown.
+            # shellcheck disable=SC2015  # || true intentionally swallows any failure; parsed below
+            rcm_out=$(cd "$L4T" && timeout --foreground 90 sudo ./nvautoflash.sh --print_boardid 2>&1 || true)
+        else
+            warn "sudo credentials unavailable — cannot query the EEPROM via RCM"
+            rcm_out="(sudo unavailable)"
+        fi
+        # Two RCM output formats exist: a single 'Board ID(3701) version(501)
+        # sku(0004) revision(J.0)' line, and JP5.1.2's per-field lines
+        # '--- Parsing board ID (3701) succeeded.' — parse each field
+        # tolerantly (optional space before the parens, any case).
+        boardid=$(echo "$rcm_out" | grep -oiE 'board id ?\([0-9]+\)' | head -1 | grep -oE '[0-9]+')
+        fab=$(echo "$rcm_out"     | grep -oiE 'version ?\([0-9]+\)'  | head -1 | grep -oE '[0-9]+')
+        sku=$(echo "$rcm_out"     | grep -oiE 'sku ?\([0-9]+\)'      | head -1 | grep -oE '[0-9]+')
+        if [ -n "$boardid" ] && [ -n "$fab" ] && [ -n "$sku" ]; then
+            ok "EEPROM: BOARDID $boardid  FAB $fab  SKU $sku"
             # SKU compared numerically (base-10 forced) so 0004 and 4 both match — zero-padding varies between tools/logs.
             if [ "$boardid" = "3701" ] && { [ "$((10#$sku))" -eq 4 ] || [ "$((10#$sku))" -eq 5 ]; } && [ "$fab" -ge 501 ]; then
                 ok "BOARDID 3701, FAB $fab >= 501, SKU $sku -> POST-PCN module (patch REQUIRED on JP5.1.2)"

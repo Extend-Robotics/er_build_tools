@@ -68,6 +68,7 @@ cp "$shims/sshpass" "$shims/ssh"   # 7020 key-auth path calls plain ssh
 
 cat > "$shims/sudo" <<'EOF'
 #!/bin/bash
+[ "$1" = "-v" ] && exit 0   # credential check/caching — always succeeds in tests
 exec "$@"
 EOF
 
@@ -287,6 +288,23 @@ assert_contains "banner variant when no device" "$out" "flashing needs one in FO
 
 out=$(FAKE_LSUSB_LINE="$LSUSB_RECOVERY" run_preflight "$l4t_post_patch" "$COMPANION_REAL" 2>&1)
 assert_not_contains "no banner in forced recovery" "$out" "can only start from forced recovery"
+
+# ---------- 10. real JP5.1.2 RCM output (per-field '--- Parsing ...' lines) ----------
+# Captured from a real AGX Orin devkit on the deployment machine; the original
+# single-line regex matched nothing here and classification failed.
+
+BOARD_PRE_ML=$'--- Parsing board ID (3701) succeeded.\n--- Parsing board version (500) succeeded.\n--- Parsing board SKU (0000) succeeded.\n--- Parsing board REV (J.0) succeeded.\njetson-agx-orin-devkit found.'
+BOARD_POST_ML=$'--- Parsing board ID (3701) succeeded.\n--- Parsing board version (501) succeeded.\n--- Parsing board SKU (0004) succeeded.\n--- Parsing board REV (J.0) succeeded.\njetson-agx-orin-devkit found.'
+
+l4t_ml_pre="$base_tmp/l4t_mlpre"; make_l4t "$l4t_ml_pre" patched "$BOARD_PRE_ML"
+out=$(FAKE_LSUSB_LINE="$LSUSB_RECOVERY" run_preflight "$l4t_ml_pre" "$COMPANION_REAL"); rc=$?
+assert_eq       "real-format pre-PCN (FAB 500/SKU 0000) + patched -> 0" 0 "$rc"
+assert_contains "real-format parsed as pre-PCN" "$out" "PRE-PCN"
+
+l4t_ml_post="$base_tmp/l4t_mlpost"; make_l4t "$l4t_ml_post" stock "$BOARD_POST_ML"
+out=$(FAKE_LSUSB_LINE="$LSUSB_RECOVERY" run_preflight "$l4t_ml_post" "$COMPANION_REAL"); rc=$?
+assert_eq       "real-format post-PCN (FAB 501/SKU 0004) + stock -> 1" 1 "$rc"
+assert_contains "real-format DO NOT FLASH" "$out" "DO NOT FLASH"
 
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
