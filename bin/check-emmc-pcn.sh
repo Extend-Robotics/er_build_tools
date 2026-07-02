@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # check-emmc-pcn.sh — AGX Orin 64GB: pre- or post-PCN210100 eMMC?
 # Run ON a booted Jetson (or in the flash initrd). Exit: 0=pre-PCN, 1=post-PCN, 2=unknown.
+# SKIP_CHECK — straight-line script with side effects; check_bash.yml must never source-execute it.
 set -u
 sz=$(cat /sys/block/mmcblk0/size 2>/dev/null || echo 0)
 name=$(cat /sys/block/mmcblk0/device/name 2>/dev/null || echo "?")

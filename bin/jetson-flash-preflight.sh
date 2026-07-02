@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # jetson-flash-preflight.sh — pre-flash checks for the AGX Orin 64GB eMMC patch (PCN210100)
+# SKIP_CHECK — straight-line script that probes hardware (lsusb/ssh/sudo); check_bash.yml must never source-execute it.
 #
 # Order of operations:
 #   1. Detect the connected Jetson (forced recovery / flash initrd / booted / absent)
 #      and determine whether its module is pre- or post-PCN.
 #   2. Check the local JetPack 5.1.2 flash tree — severity depends on what step 1 found.
-#   3. Verdict: GO / DO NOT FLASH.
+#   3. Verdict: GO / DO NOT FLASH.  Exit: 0 GO, 1 DO NOT FLASH, 2 undetermined.
 #
 # Background: Linux_for_Tegra/README-LOCAL-PATCH.md
-# Env overrides: L4T, COMPANION, JETSON_SSH (user@host), JETSON_PASS, NO_COLOR
+# Env overrides: L4T, COMPANION, JETSON_SSH (user@host), JETSON_PASS, NO_COLOR,
+#                ER_BUILD_TOOLS_BRANCH (branch the companion is fetched from when absent)
 #
 # Detection method per state:
 #   - flash initrd : run companion check over the USB link, root/root (definitive)
@@ -28,6 +30,9 @@ INITRD_ADDR="fc00:1:1::2"
 DEF_USER="extend"
 DEF_HOST="192.168.55.1"
 REAPPLY_CMD="cp -n '$XML' '$XML.orig' && sed -i 's/num_sectors=\"124321792\"/num_sectors=\"124190720\"/' '$XML'"
+RAW_URL_BASE="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${ER_BUILD_TOOLS_BRANCH:-main}"
+COMPANION_TMP=""
+trap 'rm -f "$COMPANION_TMP"' EXIT
 
 # Colors: only when stdout is a terminal, and honouring NO_COLOR
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -52,7 +57,11 @@ read_sectors_verdict() {        # $1 = sector count
 # (0=pre-PCN, 1=post-PCN, 2=unknown) onto module_state. Returns 1 on transport failure.
 companion_via() {               # $@ = ssh command opening a shell on the target
     local out rc
+    # Missing companion must be a transport failure, not a verdict: the failed
+    # stdin redirect would otherwise exit 1, which the map below reads as post-PCN.
+    [ -r "$COMPANION" ] || return 1
     out=$("$@" 'bash -s' < "$COMPANION" 2>/dev/null); rc=$?
+    # shellcheck disable=SC2001  # multiline indent; the ${var//} form is unreadable here
     [ -n "$out" ] && echo "$out" | sed 's/^/         /'
     case "$rc" in
         0) module_state="pre-pcn"  ;;
@@ -61,6 +70,19 @@ companion_via() {               # $@ = ssh command opening a shell on the target
         *) return 1 ;;          # ssh/shell failure, not a verdict
     esac
     return 0
+}
+
+# The companion lives in this repo; a fresh host won't have it at $COMPANION.
+ensure_companion() {
+    [ -r "$COMPANION" ] && return 0
+    COMPANION_TMP=$(mktemp) || return 1
+    if curl -fsSL "$RAW_URL_BASE/bin/check-emmc-pcn.sh" -o "$COMPANION_TMP"; then
+        COMPANION="$COMPANION_TMP"
+        return 0
+    fi
+    warn "companion not at \$COMPANION and fetching $RAW_URL_BASE/bin/check-emmc-pcn.sh failed"
+    rm -f "$COMPANION_TMP"; COMPANION_TMP=""
+    return 1
 }
 
 # ---------- 1. connected jetson ----------
@@ -73,6 +95,7 @@ module_state="undetermined"     # post-pcn | pre-pcn | undetermined | not-applic
 case "$pid" in
     7035)
         ok "state: FLASH INITRD ($usbline)"
+        ensure_companion
         if ! companion_via sshpass -p root ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                            -o ConnectTimeout=5 "root@$INITRD_ADDR"; then
             # initrd may lack bash — fall back to reading the sector count directly
@@ -86,6 +109,7 @@ case "$pid" in
         ok "state: BOOTED L4T, USB device mode ($usbline)"
         target="${JETSON_SSH:-$DEF_USER@$DEF_HOST}"
         booted_ok=0
+        ensure_companion
         echo "         running companion check via ssh $target ..."
         if [ -n "${JETSON_PASS:-}" ]; then
             SSHPASS="$JETSON_PASS" companion_via sshpass -e ssh -o StrictHostKeyChecking=no \
@@ -96,7 +120,7 @@ case "$pid" in
         fi
         # Interactive fallback: prompt for credentials when running in a terminal
         # (skipped when non-interactive, so automation never hangs here).
-        if [ "$booted_ok" != 1 ] && [ -t 0 ]; then
+        if [ "$booted_ok" != 1 ] && [ -t 0 ] && [ -r "$COMPANION" ]; then
             echo "         key/env auth failed — enter Jetson ssh credentials."
             echo "         (press Enter to accept the [default: ...] value; blank password gives up)"
             for _try in 1 2 3; do
@@ -115,13 +139,14 @@ case "$pid" in
         fi
         if [ "$booted_ok" != 1 ]; then
             warn "could not check the booted Jetson over ssh. Options:"
-            warn "  JETSON_PASS='<password>' [JETSON_SSH=<user@host>] $0     # non-interactive"
+            warn "  re-run with JETSON_PASS='<password>' [JETSON_SSH=<user@host>]     # non-interactive"
             warn "  ...or run ~/check-emmc-pcn.sh on the Jetson yourself, or use forced recovery"
         fi
         ;;
     7023)
         ok "state: FORCED RECOVERY, AGX Orin ($usbline)"
         echo "         querying module EEPROM via RCM (needs sudo, ~15s)..."
+        # shellcheck disable=SC2015  # || true intentionally swallows any failure; parsed below
         rcm_out=$(cd "$L4T" && timeout 90 sudo ./nvautoflash.sh --print_boardid 2>&1 || true)
         boardline=$(echo "$rcm_out" | grep -oE 'Board ID\([0-9]+\) version\([0-9]+\) sku\([0-9]+\) revision\([^)]*\)' | head -1)
         if [ -n "$boardline" ]; then
@@ -183,11 +208,11 @@ fi
 # ---------- 3. verdict ----------
 hdr "== 3. Verdict =="
 case "$module_state:$tree_state" in
-    post-pcn:patched)  ok "GO — module needs the patch and the tree has it. Flash away.";;
-    post-pcn:*)        bad "DO NOT FLASH — this module needs the patch and the tree does NOT have it (see section 2).";;
-    pre-pcn:patched)   ok "GO — pre-PCN module; patched tree lays its eMMC out 64 MiB short (harmless, rootfs is on NVMe).";;
-    pre-pcn:stock)     ok "GO — pre-PCN module, stock layout fits.";;
-    pre-pcn:*)         warn "pre-PCN module, but the flash tree is in an unexpected state — fix section 2 first.";;
-    not-applicable:*)  warn "patch not applicable to the connected device — this script can't vouch for the flash.";;
-    *)                 warn "could not determine module type — resolve section 1 before flashing.";;
+    post-pcn:patched)  ok "GO — module needs the patch and the tree has it. Flash away."; exit 0;;
+    post-pcn:*)        bad "DO NOT FLASH — this module needs the patch and the tree does NOT have it (see section 2)."; exit 1;;
+    pre-pcn:patched)   ok "GO — pre-PCN module; patched tree lays its eMMC out 64 MiB short (harmless, rootfs is on NVMe)."; exit 0;;
+    pre-pcn:stock)     ok "GO — pre-PCN module, stock layout fits."; exit 0;;
+    pre-pcn:*)         warn "pre-PCN module, but the flash tree is in an unexpected state — fix section 2 first."; exit 2;;
+    not-applicable:*)  warn "patch not applicable to the connected device — this script can't vouch for the flash."; exit 2;;
+    *)                 warn "could not determine module type — resolve section 1 before flashing."; exit 2;;
 esac
