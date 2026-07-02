@@ -1,5 +1,9 @@
 # jetson-flash-preflight integration — design
 
+<!-- # SKIP_CHECK — this doc quotes #!/bin/bash in prose, which check_bash.yml's
+     content grep matches; this explicit marker keeps CI from source-executing
+     a markdown file (previously it was skipped only by coincidence). -->
+
 Date: 2026-07-02
 Scope decided with Tom: "Light" parity with PR #43 (no test suite), shared
 `_fetch_and_call_remote_script` abstraction refactoring both helpers, fully
@@ -108,3 +112,12 @@ Branch `jetson-flash-preflight` → PR to `main` mirroring PR #43's body
 (post-merge `.bashrc` snippet + pre-merge branch-test snippet using
 `ER_BUILD_TOOLS_BRANCH`), then a local `/review-pr` pass; judged fixes pushed;
 Tom does the final PR review.
+
+## Post-review amendment
+
+The /review-pr pass hardened the verdict channel (VERDICT-line corroboration,
+empty-companion and both-values-XML guards, sshpass dependency check, ssh
+session timeouts, numeric SKU) and — deviating from the "no test suite" scope
+line above, flagged for Tom — added `tests/test_jetson_flash_preflight.sh`
+(review-produced, validated and mutation-tested) plus a CI test step, as its
+own revertable commit. See the plan's "Post-review amendments" section.
