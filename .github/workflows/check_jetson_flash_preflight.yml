@@ -12,3 +12,7 @@ jobs:
       - name: shellcheck jetson flash preflight scripts
         shell: bash
         run: shellcheck bin/jetson-flash-preflight.sh bin/check-emmc-pcn.sh
+
+      - name: run jetson-flash-preflight tests
+        shell: bash
+        run: bash tests/test_jetson_flash_preflight.sh
