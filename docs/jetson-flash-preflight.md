@@ -22,7 +22,9 @@ or, with `.helper_bash_functions` installed:
 The one-liner is for eyeball runs only: if the network fails, `bash <(curl -Ls …)`
 executes nothing and exits **0**, which reads as GO. Anything automated must use
 `er_jetson_flash_preflight` — it verifies the fetch before running and returns
-non-zero when the fetch fails.
+non-zero when the fetch fails. Helper fetches are also cache-busted, so every
+run executes the current branch tip (raw.githubusercontent otherwise serves a
+CDN copy for up to ~5 minutes after a push).
 
 ## What it checks
 

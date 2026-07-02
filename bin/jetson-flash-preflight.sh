@@ -114,8 +114,9 @@ companion_via() {               # $@ = ssh command opening a shell on the target
 # The companion lives in this repo; a fresh host won't have it at $COMPANION.
 ensure_companion() {
     companion_ok && return 0
-    COMPANION_TMP=$(mktemp) || { warn "mktemp failed — cannot fetch companion"; return 1; }
-    if curl -fsSL --max-time 30 "$RAW_URL_BASE/bin/check-emmc-pcn.sh" -o "$COMPANION_TMP"; then
+    COMPANION_TMP=$(mktemp "${TMPDIR:-/tmp}/er_companion.XXXXXXXXXX") || { warn "mktemp failed — cannot fetch companion"; return 1; }
+    # ?nocache= busts raw.githubusercontent's ~5-minute CDN cache (stale-revision guard).
+    if curl -fsSL --max-time 30 "$RAW_URL_BASE/bin/check-emmc-pcn.sh?nocache=$$-${RANDOM}" -o "$COMPANION_TMP"; then
         COMPANION="$COMPANION_TMP"
         return 0
     fi

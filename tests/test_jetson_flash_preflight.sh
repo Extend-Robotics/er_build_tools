@@ -248,6 +248,16 @@ out=$(PATH="$helper_curl:$PATH" FAKE_FETCH='echo "branch=${ER_BUILD_TOOLS_BRANCH
       bash -c "source '$HELPERS'; er_jetson_flash_preflight" 2>&1)
 assert_contains "helper exports branch to child" "$out" "branch=main"
 
+# temp hygiene: fetched scripts are removed on success, failure, and fetch-fail
+tmpbox="$base_tmp/tmpbox"; mkdir -p "$tmpbox"
+PATH="$helper_curl:$PATH" TMPDIR="$tmpbox" FAKE_FETCH='exit 0' \
+  bash -c "source '$HELPERS'; er_jetson_flash_preflight" >/dev/null 2>&1
+PATH="$helper_curl:$PATH" TMPDIR="$tmpbox" FAKE_FETCH='exit 7' \
+  bash -c "source '$HELPERS'; er_jetson_flash_preflight" >/dev/null 2>&1
+PATH="$helper_curl:$PATH" TMPDIR="$tmpbox" FAKE_FETCH=fail \
+  bash -c "source '$HELPERS'; er_jetson_flash_preflight" >/dev/null 2>&1
+assert_eq "no temp files left behind by the helper" 0 "$(find "$tmpbox" -type f | wc -l)"
+
 # ---------- 8. review regressions: fabricated verdicts + half-edited XML ----------
 
 # empty companion (e.g. a failed `wget -qO` leaves one): rc 0 over a healthy
