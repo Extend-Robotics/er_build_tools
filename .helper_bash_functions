@@ -207,23 +207,40 @@ update_helper_bash_functions() {
     echo -e "${Green}helper_bash_functions updated. Run 'source ~/.helper_bash_functions' to reload.${Color_Off}"
 }
 
-er_usb_camera_healthcheck() {
-    local script_path exit_code
+_fetch_and_call_remote_script() {
+    # $1 = repo-relative script path; remaining args are passed to the script.
+    # Temp file rather than piping curl into bash: the script keeps the terminal
+    # on stdin (interactive ssh prompts work), and the fetch's success is checked
+    # before anything executes — a truncated stream can never half-run.
+    local script_rel_path="$1" script_path exit_code
+    shift
     if [ -z "${THIS_SCRIPT_BRANCH:-}" ]; then
         echo "ERROR: THIS_SCRIPT_BRANCH is unset; cannot determine which branch to fetch" >&2
         return 1
     fi
-    script_path="$(mktemp)" || return 1
-    if ! curl -fsSL "https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/bin/usb-camera-healthcheck.sh" -o "$script_path"; then
-        echo "ERROR: failed to fetch usb-camera-healthcheck.sh" >&2
+    script_path="$(mktemp "${TMPDIR:-/tmp}/er_fetch.XXXXXXXXXX")" || return 1
+    # ?nocache= busts raw.githubusercontent's ~5-minute CDN cache, which can
+    # otherwise serve a just-superseded revision shortly after a push.
+    if ! curl -fsSL "https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/${script_rel_path}?nocache=$$-${RANDOM}" -o "$script_path"; then
+        echo "ERROR: failed to fetch ${script_rel_path} (branch ${THIS_SCRIPT_BRANCH})" >&2
         rm -f "$script_path"
         return 1
     fi
-    bash "$script_path" "$@"
+    # Subshell so cleanup runs even when Ctrl-C aborts this function mid-child:
+    # the interactive shell stops executing the function at that point, but the
+    # subshell still runs its EXIT trap. The branch export keeps any sibling-file
+    # fetches done by the script on the same branch.
+    (
+        trap 'rm -f "$script_path"' EXIT
+        ER_BUILD_TOOLS_BRANCH="${THIS_SCRIPT_BRANCH}" bash "$script_path" "$@"
+    )
     exit_code=$?
     rm -f "$script_path"
     return "$exit_code"
 }
+
+er_usb_camera_healthcheck() { _fetch_and_call_remote_script "bin/usb-camera-healthcheck.sh" "$@"; }
+er_jetson_flash_preflight() { _fetch_and_call_remote_script "bin/jetson-flash-preflight.sh" "$@"; }
 
 # python linters
 LINTER_VERSIONS_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/linter_versions.env"

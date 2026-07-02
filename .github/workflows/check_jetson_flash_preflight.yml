@@ -1,0 +1,18 @@
+name: Check jetson flash preflight
+
+on: [push]
+
+jobs:
+  check_jetson_flash_preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+
+      - name: shellcheck jetson flash preflight scripts
+        shell: bash
+        run: shellcheck bin/jetson-flash-preflight.sh bin/check-emmc-pcn.sh
+
+      - name: run jetson-flash-preflight tests
+        shell: bash
+        run: bash tests/test_jetson_flash_preflight.sh
