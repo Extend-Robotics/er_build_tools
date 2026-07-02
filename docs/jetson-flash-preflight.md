@@ -19,6 +19,11 @@ or, with `.helper_bash_functions` installed:
 
     er_jetson_flash_preflight
 
+The one-liner is for eyeball runs only: if the network fails, `bash <(curl -Ls …)`
+executes nothing and exits **0**, which reads as GO. Anything automated must use
+`er_jetson_flash_preflight` — it verifies the fetch before running and returns
+non-zero when the fetch fails.
+
 ## What it checks
 
 1. **Connected Jetson (USB)** — finds the NVIDIA USB device and classifies
@@ -29,6 +34,7 @@ or, with `.helper_bash_functions` installed:
    | flash initrd (`7035`) | companion check over the USB link (root/root), falling back to a direct eMMC sector read |
    | booted L4T (`7020`) | companion check over ssh — key auth, `JETSON_PASS`/`JETSON_SSH`, or an interactive prompt |
    | forced recovery (`7023`) | module EEPROM via RCM (`nvautoflash.sh --print_boardid`, needs sudo, ~15s): BOARDID 3701 + FAB ≥ 501 + SKU 0004/0005 ⇒ post-PCN |
+   | other `0955:` PID | not applicable — not a state this check covers |
    | none | undetermined — connect the flashing USB-C port |
 
 2. **Host flash tree** — whether the `num_sectors` patch is applied to the
@@ -55,7 +61,7 @@ absent. It also works standalone on any booted Jetson:
 | `COMPANION` | `~/check-emmc-pcn.sh` | local companion path (auto-fetched when absent) |
 | `JETSON_SSH` | `extend@192.168.55.1` | ssh target for the booted-L4T check |
 | `JETSON_PASS` | *(unset)* | ssh password, enables the non-interactive booted-L4T check |
-| `ER_BUILD_TOOLS_BRANCH` | `main` | branch the companion is fetched from |
+| `ER_BUILD_TOOLS_BRANCH` | `main` | branch the companion is fetched from (honoured for direct/curl-bash runs; `er_jetson_flash_preflight` deliberately pins it to the helper's own branch for coherence) |
 | `NO_COLOR` | *(unset)* | disable colours |
 
 ## Verdicts and exit codes
@@ -65,8 +71,14 @@ absent. It also works standalone on any booted Jetson:
 | post-PCN × patched | GO | 0 |
 | post-PCN × anything else | DO NOT FLASH | 1 |
 | pre-PCN × patched or stock | GO | 0 |
+| pre-PCN × missing/unrecognized XML | resolve first | 2 |
 | undetermined / not-applicable | resolve first | 2 |
 
-Automation can gate on the exit code:
+`er_jetson_flash_preflight` also returns 1 when the script fetch itself fails —
+fail-closed for `&&` gating (indistinguishable from DO NOT FLASH only if you
+`case` on `$?`).
 
-    er_jetson_flash_preflight && cd $L4T && sudo ./flash.sh jetson-agx-orin-devkit external
+Automation can gate on the exit code (`L4T` exported in your shell, same
+default as the script's):
+
+    er_jetson_flash_preflight && cd "$L4T" && sudo ./flash.sh jetson-agx-orin-devkit external
