@@ -92,9 +92,86 @@ def discover_repos(src_dir):
     return sorted(repos)
 
 
-def update_repo(path, name, askpass):  # pylint: disable=unused-argument
-    """Fetch and fast-forward one repo. Returns (status, detail). Real logic in Task 2."""
-    return "up-to-date", "not implemented yet"
+def current_branch(repo, askpass):
+    """Return the checked-out branch name, or None when HEAD is detached."""
+    res = git(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"], askpass)
+    return res.stdout.strip() if res.returncode == 0 else None
+
+
+def short_rev(repo, ref, askpass):
+    """Return the abbreviated hash of ref, or None."""
+    res = git(repo, ["rev-parse", "--short", ref], askpass)
+    return res.stdout.strip() if res.returncode == 0 else None
+
+
+def ref_exists(repo, ref, askpass):
+    """True when the fully-qualified ref exists."""
+    return git(repo, ["show-ref", "--verify", "--quiet", ref], askpass).returncode == 0
+
+
+def resolve_detached(path, name, askpass):  # pylint: disable=unused-argument
+    """Pick the branch a detached HEAD belongs to. Real logic in Task 3."""
+    return None
+
+
+def checkout_branch(path, branch, askpass):
+    """Check out `branch`, creating a tracking branch when needed. Returns the git result."""
+    if ref_exists(path, "refs/heads/{}".format(branch), askpass):
+        return git(path, ["checkout", branch], askpass)
+    return git(path, ["checkout", "--track", "origin/{}".format(branch)], askpass)
+
+
+def update_submodules(path, askpass):
+    """Sync + init/update submodules to the superproject's recorded commits."""
+    if not os.path.exists(os.path.join(path, ".gitmodules")):
+        return None
+    for args in (["submodule", "sync", "--recursive"],
+                 ["submodule", "update", "--init", "--recursive"]):
+        res = git(path, args, askpass)
+        if res.returncode != 0:
+            return "submodule update failed: {}".format(res.stdout.strip())
+    return None
+
+
+def update_repo(path, name, askpass):
+    """Fetch and fast-forward one repo. Returns (status, detail)."""
+    res = git(path, ["status", "--porcelain", "--untracked-files=no"], askpass)
+    if res.returncode != 0:
+        return "failed", "git status failed: {}".format(res.stdout.strip())
+    if res.stdout.strip():
+        return "skipped", "uncommitted local changes — commit or stash them first"
+
+    res = git(path, ["fetch", "--prune", "origin"], askpass)
+    if res.returncode != 0:
+        return "failed", "fetch failed: {}".format(res.stdout.strip())
+
+    old = short_rev(path, "HEAD", askpass)
+    branch = current_branch(path, askpass)
+    if branch is None:
+        branch = resolve_detached(path, name, askpass)
+        if branch is None:
+            return "skipped", "detached HEAD left untouched"
+        res = checkout_branch(path, branch, askpass)
+        if res.returncode != 0:
+            return "failed", "checkout of {} failed: {}".format(branch, res.stdout.strip())
+    elif not ref_exists(path, "refs/remotes/origin/{}".format(branch), askpass):
+        return "skipped", "no origin/{} on the remote".format(branch)
+
+    res = git(path, ["merge", "--ff-only", "origin/{}".format(branch)], askpass)
+    if res.returncode != 0:
+        return "skipped", "{} has diverged from origin/{} — not rewriting local commits".format(branch, branch)
+
+    if git(path, ["rev-parse", "--abbrev-ref", "@{u}"], askpass).returncode != 0:
+        git(path, ["branch", "--set-upstream-to", "origin/{}".format(branch)], askpass)
+
+    sub_error = update_submodules(path, askpass)
+    if sub_error:
+        return "failed", sub_error
+
+    new = short_rev(path, "HEAD", askpass)
+    if new != old:
+        return "updated", "{} -> {} ({})".format(old, new, branch)
+    return "up-to-date", "{} ({})".format(new, branch)
 
 
 STATUS_PRINTER = {"updated": good, "up-to-date": info, "skipped": warn, "failed": error}
