@@ -132,6 +132,7 @@ def pick_branch(repo_name, candidates):
         info("  {}) {}".format(idx, branch))
     info("  s) skip this repo")
     while True:
+        sys.stdout.flush()  # menu must be visible even when stdout is piped/block-buffered
         try:
             choice = input("Choose a branch to check out [1-{} or s]: ".format(len(candidates)))
         except EOFError:
@@ -180,13 +181,31 @@ def update_submodules(path, askpass):
     return None
 
 
-def update_repo(path, name, askpass):
-    """Fetch and fast-forward one repo. Returns (status, detail)."""
-    res = git(path, ["status", "--porcelain", "--untracked-files=no"], askpass)
+def preflight_problem(path, askpass):
+    """Return (status, detail) when the repo must not be updated, else None."""
+    # Submodule state is excluded from the dirty gate: a stale submodule pointer
+    # (e.g. a previous run that died between the superproject ff and the
+    # submodule update) must self-heal, not skip forever as "dirty".
+    res = git(path, ["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all"], askpass)
     if res.returncode != 0:
         return "failed", "git status failed: {}".format(res.stdout.strip())
     if res.stdout.strip():
         return "skipped", "uncommitted local changes — commit or stash them first"
+    if os.path.exists(os.path.join(path, ".gitmodules")):
+        res = git(path, ["submodule", "foreach", "--quiet", "--recursive",
+                         "git status --porcelain --untracked-files=no"], askpass)
+        if res.stdout.strip():
+            return "skipped", "uncommitted local changes inside a submodule — commit or stash them first"
+    if git(path, ["remote", "get-url", "origin"], askpass).returncode != 0:
+        return "skipped", "no 'origin' remote configured"
+    return None
+
+
+def update_repo(path, name, askpass):
+    """Fetch and fast-forward one repo. Returns (status, detail)."""
+    problem = preflight_problem(path, askpass)
+    if problem:
+        return problem
 
     res = git(path, ["fetch", "--prune", "origin"], askpass)
     if res.returncode != 0:
@@ -206,6 +225,8 @@ def update_repo(path, name, askpass):
 
     res = git(path, ["merge", "--ff-only", "origin/{}".format(branch)], askpass)
     if res.returncode != 0:
+        if "untracked working tree files" in res.stdout:
+            return "skipped", "an untracked file would be overwritten by the update — move it aside first"
         return "skipped", "{b} has diverged from origin/{b} — not rewriting local commits".format(b=branch)
 
     if git(path, ["rev-parse", "--abbrev-ref", "@{u}"], askpass).returncode != 0:

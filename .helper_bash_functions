@@ -241,7 +241,8 @@ _fetch_and_call_remote_script() {
 
 er_usb_camera_healthcheck() { _fetch_and_call_remote_script "bin/usb-camera-healthcheck.sh" "$@"; }
 er_jetson_flash_preflight() { _fetch_and_call_remote_script "bin/jetson-flash-preflight.sh" "$@"; }
-er_update_source_repos() { _fetch_and_call_remote_script "bin/update-source-repos.sh" "$@"; }
+# PAT converted to env before any process spawns, so it never appears in argv/ps.
+er_update_source_repos() { GITHUB_PAT="${1:-${GITHUB_PAT:-}}" _fetch_and_call_remote_script "bin/update-source-repos.sh"; }
 
 # python linters
 LINTER_VERSIONS_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/linter_versions.env"

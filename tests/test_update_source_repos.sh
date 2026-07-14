@@ -237,6 +237,107 @@ run_payload
 assert_eq "detached orphan: exit 10" 10 "$rc"
 assert_contains "detached orphan: reason" "$out" "not on any remote branch"
 
+# (e) detached exactly at the tip of one branch -> auto-resolve without prompting
+new_workspace det_tip
+new_repo repo
+advance_remote repo main
+git -C "$src/repo" fetch -q origin
+git -C "$src/repo" checkout -q --detach origin/main
+git -C "$src/repo" branch -q -D main
+run_payload
+assert_eq "detached tip: exit 10 (already at tip)" 10 "$rc"
+assert_contains "detached tip: auto message" "$out" "tip of origin/main"
+tip_branch="$(git -C "$src/repo" symbolic-ref --short HEAD)"
+assert_eq "detached tip: on main" "main" "$tip_branch"
+
+# ---------- payload: submodule recovery & safety ----------
+# stale submodule pointer from an interrupted previous run must self-heal, not dirty-skip
+new_workspace subm_stale
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+new_repo sub
+new_repo super
+git -C "$src/super" submodule add -q "$remotes/sub.git" thesub
+git -C "$src/super" commit -qm add-submodule
+git -C "$src/super" push -q origin main
+advance_remote sub main
+rm -rf "$src/sub"   # the seeding clone would itself be discovered and updated
+tmpc="$(mktemp -d "$base_tmp/subadv.XXXXXX")"
+git clone -q "$remotes/super.git" "$tmpc/c" 2>/dev/null
+git -C "$tmpc/c" submodule update -q --init
+git -C "$tmpc/c/thesub" fetch -q origin
+git -C "$tmpc/c/thesub" checkout -q origin/main
+git -C "$tmpc/c" add thesub
+git -C "$tmpc/c" commit -qm bump-sub
+git -C "$tmpc/c" push -q origin main
+rm -rf "$tmpc"
+# simulate the interrupted run: superproject ff'd but submodule update never ran
+git -C "$src/super" fetch -q origin
+git -C "$src/super" merge -q --ff-only origin/main >/dev/null
+run_payload
+assert_eq "stale submodule: exit 10" 10 "$rc"
+assert_contains "stale submodule: not dirty-skipped" "$out" "up-to-date  super"
+sub_head2="$(git -C "$src/super/thesub" rev-parse HEAD)"
+recorded2="$(git -C "$src/super" ls-tree HEAD thesub | awk '{print $3}')"
+assert_eq "stale submodule: healed to recorded commit" "$recorded2" "$sub_head2"
+
+# genuinely dirty submodule content must skip, never be clobbered
+new_workspace subm_dirty
+new_repo sub2
+tmpc="$(mktemp -d "$base_tmp/subf.XXXXXX")"
+git clone -q "$remotes/sub2.git" "$tmpc/c" 2>/dev/null
+echo v1 > "$tmpc/c/f.txt"
+git -C "$tmpc/c" add f.txt
+git -C "$tmpc/c" commit -qm add-f
+git -C "$tmpc/c" push -q origin main
+rm -rf "$tmpc"
+git -C "$src/sub2" pull -q --ff-only origin main
+new_repo super2
+git -C "$src/super2" submodule add -q "$remotes/sub2.git" thesub
+git -C "$src/super2" commit -qm add-submodule
+git -C "$src/super2" push -q origin main
+advance_remote super2 main
+echo hacked > "$src/super2/thesub/f.txt"
+run_payload
+assert_eq "dirty submodule: exit 10" 10 "$rc"
+assert_contains "dirty submodule: skipped" "$out" "skipped     super2"
+assert_contains "dirty submodule: reason" "$out" "inside a submodule"
+dirty_sub_content="$(cat "$src/super2/thesub/f.txt")"
+assert_eq "dirty submodule: edit untouched" "hacked" "$dirty_sub_content"
+unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+
+# ---------- payload: untracked-file collision & missing origin ----------
+# upstream adds a file that exists untracked locally -> skip with a clear reason
+new_workspace clash
+new_repo repo
+tmpc="$(mktemp -d "$base_tmp/clash.XXXXXX")"
+git clone -q -b main "$remotes/repo.git" "$tmpc/c" 2>/dev/null
+echo upstream > "$tmpc/c/clash.txt"
+git -C "$tmpc/c" add clash.txt
+git -C "$tmpc/c" commit -qm add-clash
+git -C "$tmpc/c" push -q origin main
+rm -rf "$tmpc"
+echo local > "$src/repo/clash.txt"
+run_payload
+assert_eq "untracked collision: exit 10" 10 "$rc"
+assert_contains "untracked collision: skipped" "$out" "skipped     repo"
+assert_contains "untracked collision: reason" "$out" "untracked file"
+assert_not_contains "untracked collision: not called diverged" "$out" "diverged"
+clash_content="$(cat "$src/repo/clash.txt")"
+assert_eq "untracked collision: file untouched" "local" "$clash_content"
+
+# a repo with no origin remote is skipped, not a run-wide failure
+new_workspace noorigin
+new_repo good
+advance_remote good main
+mkdir "$src/local_only"
+git init -q -b main "$src/local_only"
+git -C "$src/local_only" commit -q --allow-empty -m c1
+run_payload
+assert_eq "no origin: exit 0 (good repo still updates)" 0 "$rc"
+assert_contains "no origin: skipped" "$out" "skipped     local_only"
+assert_contains "no origin: reason" "$out" "no 'origin' remote"
+assert_contains "no origin: other repo updated" "$out" "updated     good"
+
 # ---------- wrapper: shims ----------
 shims="$base_tmp/shims"
 mkdir -p "$shims"
@@ -263,6 +364,7 @@ EOF
 cat > "$shims/curl" <<'EOF'
 #!/bin/bash
 # API check has -w '%{http_code}' and its config on stdin; payload fetch has -o <file>.
+echo "curl $*" >> "${CURL_LOG:-/dev/null}"
 args="$*"
 out=""; prev=""
 for a in "$@"; do [ "$prev" = "-o" ] && [ "$a" != "/dev/null" ] && out="$a"; prev="$a"; done
@@ -277,7 +379,9 @@ chmod +x "$shims/docker" "$shims/curl"
 
 run_wrapper() { # args... ; uses env knobs; sets $out and $rc
   export DOCKER_LOG="$base_tmp/docker.log.$RANDOM"
+  export CURL_LOG="$base_tmp/curl.log.$RANDOM"
   : > "$DOCKER_LOG"
+  : > "$CURL_LOG"
   out="$(PATH="$shims:$PATH" PAYLOAD="${PAYLOAD_OVERRIDE:-$PAYLOAD}" NO_COLOR=1 \
          bash "$WRAPPER" "$@" 2>&1 < /dev/null)"
   rc=$?
@@ -326,6 +430,10 @@ PAYLOAD_OVERRIDE="/nonexistent" FAKE_FETCH_RC=22 run_wrapper "$good_pat"
 assert_eq "fetch fail: exit 1" 1 "$rc"
 assert_contains "fetch fail: message" "$out" "failed to fetch"
 
+FAKE_CP_RC=1 run_wrapper "$good_pat"
+assert_eq "docker cp fail: exit 1" 1 "$rc"
+assert_contains "docker cp fail: message" "$out" "failed to copy"
+
 # ---------- wrapper: payload rc -> build behaviour ----------
 run_wrapper "$good_pat"    # payload rc 0 -> build runs
 assert_eq "update ok: exit 0" 0 "$rc"
@@ -333,6 +441,8 @@ docker_log="$(cat "$DOCKER_LOG")"
 assert_contains "update ok: payload ran" "$docker_log" "python3"
 assert_contains "update ok: build ran" "$docker_log" "colcon_build"
 assert_not_contains "pat never in docker argv" "$docker_log" "$good_pat"
+curl_log="$(cat "$CURL_LOG")"
+assert_not_contains "pat never in curl argv" "$curl_log" "$good_pat"
 
 FAKE_PAYLOAD_RC=10 run_wrapper "$good_pat"
 assert_eq "nothing updated: exit 0" 0 "$rc"
@@ -345,8 +455,8 @@ assert_eq "payload failed: exit 1" 1 "$rc"
 docker_log="$(cat "$DOCKER_LOG")"
 assert_not_contains "payload failed: no build" "$docker_log" "colcon_build"
 
-FAKE_BUILD_RC=9 run_wrapper "$good_pat"
-assert_eq "helpers missing: exit 9" 9 "$rc"
+FAKE_BUILD_RC=97 run_wrapper "$good_pat"
+assert_eq "helpers missing: exit 97" 97 "$rc"
 assert_contains "helpers missing: message" "$out" "helper_bash_functions"
 
 FAKE_BUILD_RC=2 run_wrapper "$good_pat"

@@ -11,7 +11,7 @@
 #
 # Env overrides: PAYLOAD (local payload path — skips the raw.githubusercontent
 #                fetch; used by tests/dev), ER_BUILD_TOOLS_BRANCH, NO_COLOR
-# Exit codes: 0 ok; 9 helpers/colcon_build missing in container; otherwise the
+# Exit codes: 0 ok; 97 helpers/colcon_build missing in container; otherwise the
 #             failing step's code.
 
 set -u
@@ -20,7 +20,15 @@ CONTAINER="er_robot"
 RAW_URL_BASE="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${ER_BUILD_TOOLS_BRANCH:-main}"
 PAYLOAD_REL_PATH="bin/update_source_repos.py"
 PAYLOAD_TMP=""
-trap 'rm -f "$PAYLOAD_TMP"' EXIT
+CONTAINER_TMP=""
+# shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
+cleanup() {
+    rm -f "$PAYLOAD_TMP"
+    if [ -n "$CONTAINER_TMP" ]; then
+        docker exec "$CONTAINER" rm -f "$CONTAINER_TMP" >/dev/null 2>&1
+    fi
+}
+trap cleanup EXIT
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     C_GRN=$'\033[32m'; C_YLW=$'\033[33m'; C_RED=$'\033[31m'; C_OFF=$'\033[0m'
@@ -54,8 +62,10 @@ fi
 
 # ---------- PAT live check: fail fast on a revoked/typo'd token ----------
 # The token reaches curl via a config file on stdin, never argv (invisible to ps).
-http_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -K - \
-             https://api.github.com/user <<< "header = \"Authorization: token ${pat}\"")" \
+# printf is a builtin, so the token also never transits a herestring temp file.
+http_code="$(printf 'header = "Authorization: token %s"\n' "$pat" \
+             | curl -s -o /dev/null -w '%{http_code}' --max-time 10 -K - \
+                    https://api.github.com/user)" \
     || http_code="000"
 case "$http_code" in
     2??) ok "GitHub PAT verified" ;;
@@ -95,13 +105,13 @@ if ! docker cp "$payload_src" "${CONTAINER}:${dest}"; then
     err "failed to copy the update script into '${CONTAINER}'"
     exit 1
 fi
+CONTAINER_TMP="$dest"    # from here the EXIT trap removes it, even on Ctrl-C
 tty_flags=(-i)
 [ -t 0 ] && [ -t 1 ] && tty_flags=(-i -t)    # the branch picker needs a TTY when we have one
 # -e GITHUB_PAT with no value forwards it from this process's env — the token
 # never appears in argv on the host or in the container.
 GITHUB_PAT="$pat" docker exec "${tty_flags[@]}" -e GITHUB_PAT "$CONTAINER" python3 "$dest"
 payload_rc=$?
-docker exec "$CONTAINER" rm -f "$dest" >/dev/null 2>&1
 
 # ---------- build ----------
 case "$payload_rc" in
@@ -114,14 +124,14 @@ case "$payload_rc" in
         ok "Source updated — running colcon_build in '${CONTAINER}'..."
         # shellcheck disable=SC2016  # $HOME must expand inside the container, not here
         docker exec "${tty_flags[@]}" "$CONTAINER" bash -c '
-            [ -f "$HOME/.helper_bash_functions" ] || exit 9
+            [ -f "$HOME/.helper_bash_functions" ] || exit 97
             source "$HOME/.helper_bash_functions"
-            type colcon_build >/dev/null 2>&1 || exit 9
+            type colcon_build >/dev/null 2>&1 || exit 97
             colcon_build'
         build_rc=$?
-        if [ "$build_rc" -eq 9 ]; then
+        if [ "$build_rc" -eq 97 ]; then
             err "the .helper_bash_functions file (or colcon_build) is missing inside '${CONTAINER}' — cannot build"
-            exit 9
+            exit 97
         elif [ "$build_rc" -ne 0 ]; then
             err "colcon_build failed (exit ${build_rc})"
             exit "$build_rc"
