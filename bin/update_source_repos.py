@@ -109,9 +109,56 @@ def ref_exists(repo, ref, askpass):
     return git(repo, ["show-ref", "--verify", "--quiet", ref], askpass).returncode == 0
 
 
-def resolve_detached(path, name, askpass):  # pylint: disable=unused-argument
-    """Pick the branch a detached HEAD belongs to. Real logic in Task 3."""
-    return None
+def remote_branches(repo, askpass, extra_args):
+    """List origin branch names (without the origin/ prefix) matching extra_args filters."""
+    args = ["for-each-ref", "refs/remotes/origin", "--format=%(refname:short)"] + extra_args
+    res = git(repo, args, askpass)
+    if res.returncode != 0:
+        return []
+    names = []
+    for line in res.stdout.splitlines():
+        name = line.strip()
+        if not name or name.endswith("/HEAD") or not name.startswith("origin/"):
+            continue
+        names.append(name[len("origin/"):])
+    return names
+
+
+def pick_branch(repo_name, candidates):
+    """Interactively ask the QA tester which branch to check out; None means skip."""
+    warn("{}: can't tell which branch this detached HEAD belongs to.".format(repo_name))
+    info("  The commit is on these remote branches:")
+    for idx, branch in enumerate(candidates, 1):
+        info("  {}) {}".format(idx, branch))
+    info("  s) skip this repo")
+    while True:
+        try:
+            choice = input("Choose a branch to check out [1-{} or s]: ".format(len(candidates)))
+        except EOFError:
+            warn("no answer — skipping this repo")
+            return None
+        choice = choice.strip().lower()
+        if choice == "s":
+            return None
+        if choice.isdigit() and 1 <= int(choice) <= len(candidates):
+            return candidates[int(choice) - 1]
+        info("Invalid choice.")
+
+
+def resolve_detached(path, name, askpass):
+    """Work out which branch a detached HEAD belongs to; None when it stays detached."""
+    tips = remote_branches(path, askpass, ["--points-at", "HEAD"])
+    if len(tips) == 1:
+        info("  detached HEAD is the tip of origin/{} — checking it out".format(tips[0]))
+        return tips[0]
+    candidates = tips or remote_branches(path, askpass, ["--contains", "HEAD"])
+    if not candidates:
+        warn("  detached HEAD commit is not on any remote branch — leaving untouched")
+        return None
+    if len(candidates) == 1:
+        info("  detached HEAD commit is only on origin/{} — checking it out".format(candidates[0]))
+        return candidates[0]
+    return pick_branch(name, candidates)
 
 
 def checkout_branch(path, branch, askpass):

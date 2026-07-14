@@ -181,5 +181,61 @@ recorded="$(git -C "$src/super" ls-tree HEAD thesub | awk '{print $3}')"
 assert_eq "submodule: checked out at recorded commit" "$recorded" "$sub_head"
 unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
 
+# ---------- payload: detached HEAD ----------
+# (a) exactly one branch contains the commit -> auto-resolve, checkout, pull
+new_workspace det_auto
+new_repo repo
+advance_remote repo main
+git -C "$src/repo" fetch -q origin
+git -C "$src/repo" checkout -q --detach HEAD   # detach at old commit; only main contains it
+git -C "$src/repo" branch -q -D main
+advance_remote repo main
+run_payload
+assert_eq "detached auto: exit 0" 0 "$rc"
+assert_contains "detached auto: updated" "$out" "updated     repo"
+resolved_branch="$(git -C "$src/repo" symbolic-ref --short HEAD)"
+assert_eq "detached auto: back on main" "main" "$resolved_branch"
+
+# (b) ambiguous: commit contained in two branches, tip of neither -> picker; pick 1 (alpha)
+new_workspace det_pick
+new_repo repo alpha
+git -C "$src/repo" push -q origin alpha:zeta   # second branch, same history
+git -C "$src/repo" fetch -q origin
+git -C "$src/repo" checkout -q --detach HEAD
+git -C "$src/repo" branch -q -D alpha
+advance_remote repo alpha                      # both branches move past the commit,
+advance_remote repo zeta                       # so --points-at finds no tips
+printf '1\n' > "$base_tmp/answer_pick"
+run_payload "$base_tmp/answer_pick"
+assert_eq "detached picker: exit 0" 0 "$rc"
+assert_contains "detached picker: offers alpha" "$out" "1) alpha"
+assert_contains "detached picker: offers zeta" "$out" "2) zeta"
+assert_contains "detached picker: skip option" "$out" "s) skip this repo"
+picked_branch="$(git -C "$src/repo" symbolic-ref --short HEAD)"
+assert_eq "detached picker: on alpha" "alpha" "$picked_branch"
+
+# (c) ambiguous (two branch tips at the commit), user chooses skip
+new_workspace det_skip
+new_repo repo alpha
+git -C "$src/repo" push -q origin alpha:zeta
+git -C "$src/repo" fetch -q origin
+git -C "$src/repo" checkout -q --detach HEAD
+git -C "$src/repo" branch -q -D alpha
+printf 's\n' > "$base_tmp/answer_skip"
+run_payload "$base_tmp/answer_skip"
+assert_eq "detached skip: exit 10" 10 "$rc"
+assert_contains "detached skip: reported" "$out" "skipped     repo"
+still_detached="$(git -C "$src/repo" symbolic-ref --short -q HEAD; echo "rc=$?")"
+assert_contains "detached skip: still detached" "$still_detached" "rc=1"
+
+# (d) commit on no remote branch -> warn + skip
+new_workspace det_orphan
+new_repo repo
+git -C "$src/repo" checkout -q --detach HEAD
+git -C "$src/repo" commit -q --allow-empty -m local-orphan
+run_payload
+assert_eq "detached orphan: exit 10" 10 "$rc"
+assert_contains "detached orphan: reason" "$out" "not on any remote branch"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
