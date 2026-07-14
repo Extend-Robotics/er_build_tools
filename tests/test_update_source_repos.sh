@@ -237,5 +237,121 @@ run_payload
 assert_eq "detached orphan: exit 10" 10 "$rc"
 assert_contains "detached orphan: reason" "$out" "not on any remote branch"
 
+# ---------- wrapper: shims ----------
+shims="$base_tmp/shims"
+mkdir -p "$shims"
+
+cat > "$shims/docker" <<'EOF'
+#!/bin/bash
+echo "docker $*" >> "$DOCKER_LOG"
+case "$1" in
+  container)  # container inspect -f ... er_robot
+    if [ "${FAKE_CONTAINER_RUNNING:-true}" = "true" ]; then echo "true"; exit 0; fi
+    exit 1 ;;
+  cp) exit "${FAKE_CP_RC:-0}" ;;
+  exec)
+    case "$*" in
+      *python3*) exit "${FAKE_PAYLOAD_RC:-0}" ;;
+      *"rm -f"*) exit 0 ;;
+      *colcon_build*) exit "${FAKE_BUILD_RC:-0}" ;;
+      *) exit 0 ;;
+    esac ;;
+  *) exit 0 ;;
+esac
+EOF
+
+cat > "$shims/curl" <<'EOF'
+#!/bin/bash
+# API check has -w '%{http_code}' and its config on stdin; payload fetch has -o <file>.
+args="$*"
+out=""; prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && [ "$a" != "/dev/null" ] && out="$a"; prev="$a"; done
+if [[ "$args" == *"%{http_code}"* ]]; then cat > /dev/null; printf '%s' "${FAKE_HTTP_CODE:-200}"; exit 0; fi
+if [ -n "$out" ]; then
+  [ "${FAKE_FETCH_RC:-0}" -ne 0 ] && exit "${FAKE_FETCH_RC}"
+  echo "print('fake payload')" > "$out"; exit 0
+fi
+exit 0
+EOF
+chmod +x "$shims/docker" "$shims/curl"
+
+run_wrapper() { # args... ; uses env knobs; sets $out and $rc
+  export DOCKER_LOG="$base_tmp/docker.log.$RANDOM"
+  : > "$DOCKER_LOG"
+  out="$(PATH="$shims:$PATH" PAYLOAD="${PAYLOAD_OVERRIDE:-$PAYLOAD}" NO_COLOR=1 \
+         bash "$WRAPPER" "$@" 2>&1 < /dev/null)"
+  rc=$?
+}
+
+good_pat="ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"   # ghp_ + 36 chars
+fg_pat="github_pat_$(printf 'a%.0s' $(seq 1 82))"      # fine-grained shape
+
+# ---------- wrapper: PAT validation ----------
+run_wrapper
+assert_eq "no pat: exit 1" 1 "$rc"
+assert_contains "no pat: usage" "$out" "Usage: er_update_source_repos"
+
+run_wrapper "notatoken"
+assert_eq "bad prefix: exit 1" 1 "$rc"
+assert_contains "bad prefix: message" "$out" "does not look like a GitHub PAT"
+
+run_wrapper "ghp_tooshort"
+assert_eq "bad length: exit 1" 1 "$rc"
+
+run_wrapper "  ${good_pat}
+"
+assert_eq "whitespace-wrapped pat accepted" 0 "$rc"
+
+run_wrapper "$fg_pat"
+assert_eq "fine-grained pat accepted" 0 "$rc"
+
+GITHUB_PAT="$good_pat" run_wrapper
+assert_eq "pat via env accepted" 0 "$rc"
+
+# ---------- wrapper: PAT live check ----------
+FAKE_HTTP_CODE=401 run_wrapper "$good_pat"
+assert_eq "401: exit 1" 1 "$rc"
+assert_contains "401: message" "$out" "rejected the PAT"
+
+FAKE_HTTP_CODE=000 run_wrapper "$good_pat"
+assert_eq "network down: continues" 0 "$rc"
+assert_contains "network down: warns" "$out" "could not reach api.github.com"
+
+# ---------- wrapper: container / fetch failures ----------
+FAKE_CONTAINER_RUNNING=false run_wrapper "$good_pat"
+assert_eq "container down: exit 1" 1 "$rc"
+assert_contains "container down: message" "$out" "er_robot"
+
+PAYLOAD_OVERRIDE="/nonexistent" FAKE_FETCH_RC=22 run_wrapper "$good_pat"
+assert_eq "fetch fail: exit 1" 1 "$rc"
+assert_contains "fetch fail: message" "$out" "failed to fetch"
+
+# ---------- wrapper: payload rc -> build behaviour ----------
+run_wrapper "$good_pat"    # payload rc 0 -> build runs
+assert_eq "update ok: exit 0" 0 "$rc"
+docker_log="$(cat "$DOCKER_LOG")"
+assert_contains "update ok: payload ran" "$docker_log" "python3"
+assert_contains "update ok: build ran" "$docker_log" "colcon_build"
+assert_not_contains "pat never in docker argv" "$docker_log" "$good_pat"
+
+FAKE_PAYLOAD_RC=10 run_wrapper "$good_pat"
+assert_eq "nothing updated: exit 0" 0 "$rc"
+assert_contains "nothing updated: message" "$out" "skipping colcon_build"
+docker_log="$(cat "$DOCKER_LOG")"
+assert_not_contains "nothing updated: no build" "$docker_log" "colcon_build"
+
+FAKE_PAYLOAD_RC=1 run_wrapper "$good_pat"
+assert_eq "payload failed: exit 1" 1 "$rc"
+docker_log="$(cat "$DOCKER_LOG")"
+assert_not_contains "payload failed: no build" "$docker_log" "colcon_build"
+
+FAKE_BUILD_RC=9 run_wrapper "$good_pat"
+assert_eq "helpers missing: exit 9" 9 "$rc"
+assert_contains "helpers missing: message" "$out" "helper_bash_functions"
+
+FAKE_BUILD_RC=2 run_wrapper "$good_pat"
+assert_eq "build failed: exit 2" 2 "$rc"
+assert_contains "build failed: message" "$out" "colcon_build failed"
+
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
