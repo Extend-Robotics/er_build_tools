@@ -60,8 +60,8 @@ def info(msg):
 
 def make_askpass():
     """Write a GIT_ASKPASS helper that answers from $GITHUB_PAT; return its path."""
-    fd, path = tempfile.mkstemp(prefix="er_askpass.", suffix=".sh")
-    with os.fdopen(fd, "w") as handle:
+    tmp_fd, path = tempfile.mkstemp(prefix="er_askpass.", suffix=".sh")
+    with os.fdopen(tmp_fd, "w") as handle:
         handle.write(ASKPASS_SCRIPT)
     os.chmod(path, stat.S_IRWXU)
     return path
@@ -206,7 +206,7 @@ def update_repo(path, name, askpass):
 
     res = git(path, ["merge", "--ff-only", "origin/{}".format(branch)], askpass)
     if res.returncode != 0:
-        return "skipped", "{} has diverged from origin/{} — not rewriting local commits".format(branch, branch)
+        return "skipped", "{b} has diverged from origin/{b} — not rewriting local commits".format(b=branch)
 
     if git(path, ["rev-parse", "--abbrev-ref", "@{u}"], askpass).returncode != 0:
         git(path, ["branch", "--set-upstream-to", "origin/{}".format(branch)], askpass)
