@@ -1,0 +1,22 @@
+name: Check update source repos
+
+on: [push]
+
+jobs:
+  check_update_source_repos:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+
+      - name: shellcheck update-source-repos wrapper
+        shell: bash
+        run: shellcheck bin/update-source-repos.sh
+
+      - name: python syntax check payload
+        shell: bash
+        run: python3 -m py_compile bin/update_source_repos.py
+
+      - name: run update-source-repos tests
+        shell: bash
+        run: bash tests/test_update_source_repos.sh
