@@ -6,6 +6,8 @@ This repo contains a (hopefully) useful set of utilities to speed up your day to
 
 If you have any bash (or python) stuff you use to make your life easier, why not consider adding to [helper_bash_functions](.helper_bash_functions) via PR
 
+This is already in all new arch containers, but if you want it on a host or your own machine, see Initial setup below
+
 ### Initial setup
 To install these functions on your system, just run:
 ```bash
@@ -22,9 +24,11 @@ update_helper_bash_functions
 ```
 
 
-### Tools
+### Using helper bash functions
+
+Below are links to further docs on specific tools, but there are pleanty more undocumented functions [in the helper file](.helper_bash_functions)
 
 - [update_source_repos](docs/update-source-repos.md) - Takes your gh PAT, pulls any source code updates inside your new arch container and then rebuilds your workspace
 - [usb-camera-healthcheck](docs/usb-camera-healthcheck.md) - report USB link speed + verdict for every UVC camera (sysfs only, no root, curl-bash).
 - [jetson-flash-preflight](docs/jetson-flash-preflight.md) - GO / DO NOT FLASH pre-flash check for the AGX Orin 64GB eMMC patch (PCN210100): module detection over USB + flash-tree patch check (curl-bash).
-- [urdf2usd](docs/urdf2usd.md) - URDF → USD converter (temporarily depricated, see [here](https://github.com/Extend-Robotics/er_interface/pull/156) for more info)
+- [urdf2usd](docs/urdf2usd.md) - URDF --> USD converter (temporarily depricated, see [here](https://github.com/Extend-Robotics/er_interface/pull/156) for more info)
