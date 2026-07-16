@@ -198,14 +198,23 @@ def compare_manifest(l4t, manifest):
 
 
 def locate_repo_file(rel_path, suffix):
-    """Find a repo file next to this script, else fetch from GitHub raw. (path, is_temp)."""
-    sibling = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.path.basename(rel_path))
-    if os.path.isfile(sibling):
+    """Find a repo file next to this script, else fetch from GitHub raw. (path, is_temp).
+
+    The sibling shortcut only applies when this script actually runs from a repo
+    checkout (parent dir has the repo's .helper_bash_functions). When fetched to
+    ${TMPDIR} by the er_jetson_flash wrapper, a same-named file in the
+    world-writable temp dir must NOT shadow the pinned, cache-busted GitHub fetch.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    in_repo_checkout = os.path.isfile(os.path.join(script_dir, os.pardir, ".helper_bash_functions"))
+    sibling = os.path.join(script_dir, os.path.basename(rel_path))
+    if in_repo_checkout and os.path.isfile(sibling):
         return sibling, False
     tmp_fd, path = tempfile.mkstemp(prefix="er_jetson_flash.", suffix=suffix)
     os.close(tmp_fd)
     # ?nocache= busts raw.githubusercontent's ~5-minute CDN cache (stale-revision guard)
-    url = "{}/{}?nocache={}".format(RAW_URL_BASE, rel_path, os.getpid())
+    nonce = "{}-{}".format(os.getpid(), int.from_bytes(os.urandom(4), "big"))
+    url = "{}/{}?nocache={}".format(RAW_URL_BASE, rel_path, nonce)
     res = subprocess.run(["curl", "-fsSL", "--max-time", "30", url, "-o", path], check=False)
     if res.returncode != 0 or os.path.getsize(path) == 0:
         os.unlink(path)
@@ -247,8 +256,11 @@ def verify_tree(l4t, manifest):
         good("num_sectors patch is applied")
     if manifest:
         problems = compare_manifest(l4t, manifest)
-        # The XML legitimately differs from a stock extract only via the patch,
-        # which is checked above — the canonical manifest hashes the PATCHED tree.
+        # The canonical manifest hashes the PATCHED tree, so on a stock (not yet
+        # patched) tree the flash XML differing is EXPECTED, not drift — the patch
+        # state is already reported above and `verify` maps stock to exit 2.
+        if state == "stock":
+            problems = [p for p in problems if p != "{}: content differs".format(XML_REL)]
         if problems:
             bad("tree differs from the canonical manifest:")
             for problem in problems[:10]:
@@ -377,10 +389,11 @@ def run_flash(l4t, username, password, storage):
         try:
             proc.stdin.write(password + "\n")
             proc.stdin.flush()
+            proc.stdin.close()
         except BrokenPipeError:
             pass  # flash died before reading the password; the rc check below reports it
-        finally:
-            proc.stdin.close()
+            # (close() is inside the guard too: it re-flushes buffered bytes and
+            # raises the same BrokenPipeError when the child is already gone)
         returncode = proc.wait()
     if returncode != 0:
         bad("flash failed (rc {}) — see {}/initrdlog/ for details".format(returncode, l4t))
@@ -475,19 +488,27 @@ def _proxy_handle(client):
             if not chunk:
                 return
             req += chunk
-        method, target, _ = req.split(b"\r\n")[0].decode("latin1").split(" ", 2)
+        head, _, body = req.partition(b"\r\n\r\n")
+        method, target, _ = head.split(b"\r\n")[0].decode("latin1").split(" ", 2)
         if method == "CONNECT":
             host, _, port = target.rpartition(":")
             upstream = socket.create_connection((host, int(port)), 20)
             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            if body:  # bytes pipelined after the CONNECT header (e.g. an eager TLS hello)
+                upstream.sendall(body)
         else:
             url = urlsplit(target)
             upstream = socket.create_connection((url.hostname, url.port or 80), 20)
             path = (url.path or "/") + ("?" + url.query if url.query else "")
-            lines = req.split(b"\r\n")
+            lines = head.split(b"\r\n")
             lines[0] = "{} {} HTTP/1.1".format(method, path).encode()
-            upstream.sendall(b"\r\n".join(
-                line for line in lines if not line.lower().startswith(b"proxy-connection:")))
+            # Only this first request line is rewritten; later keep-alive requests
+            # would be shoveled raw (absolute-form, possibly for another host), so
+            # force one-request-per-connection — the client just reconnects.
+            lines = [line for line in lines
+                     if not line.lower().startswith((b"proxy-connection:", b"connection:"))]
+            lines.append(b"Connection: close")
+            upstream.sendall(b"\r\n".join(lines) + b"\r\n\r\n" + body)
         client.settimeout(None)
         _proxy_pipe(client, upstream)
     except OSError:
@@ -537,28 +558,40 @@ class UsbInternet:
         self.tunnel = None
 
     def __enter__(self):
-        self.server, port = start_proxy()
-        self.tunnel = subprocess.Popen(
-            ["sshpass", "-e", "ssh", "-N", "-o", "ExitOnForwardFailure=yes"] + SSH_OPTS
-            + ["-R", "{0}:127.0.0.1:{0}".format(port), self.target],
-            env=dict(os.environ, SSHPASS=self.password))
-        time.sleep(2)
-        if self.tunnel.poll() is not None:
-            raise RuntimeError("reverse ssh tunnel failed to start")
-        res = remote_run(self.target, self.password,
-                         "tee {} >/dev/null".format(APT_PROXY_CONF),
-                         sudo=True, input_text=apt_proxy_conf(port))
-        if res.returncode != 0:
-            raise RuntimeError("could not write {} on the Jetson".format(APT_PROXY_CONF))
+        # Any failure below must tear down what already started: __exit__ never
+        # runs when __enter__ raises, and an orphaned `ssh -N -R` would outlive
+        # the tool and block the port on the Jetson for every later run.
+        try:
+            self.server, port = start_proxy()
+            self.tunnel = subprocess.Popen(  # pylint: disable=consider-using-with
+                ["sshpass", "-e", "ssh", "-N", "-o", "ExitOnForwardFailure=yes"] + SSH_OPTS
+                + ["-R", "{0}:127.0.0.1:{0}".format(port), self.target],
+                env=dict(os.environ, SSHPASS=self.password))
+            time.sleep(2)
+            if self.tunnel.poll() is not None:
+                raise RuntimeError("reverse ssh tunnel failed to start")
+            res = remote_run(self.target, self.password,
+                             "tee {} >/dev/null".format(APT_PROXY_CONF),
+                             sudo=True, input_text=apt_proxy_conf(port))
+            if res.returncode != 0:
+                raise RuntimeError("could not write {} on the Jetson".format(APT_PROXY_CONF))
+        except BaseException:
+            self._teardown(remove_conf=False)
+            raise
         good("USB internet bridge up (host proxy on 127.0.0.1:{})".format(port))
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        remote_run(self.target, self.password, "rm -f {}".format(APT_PROXY_CONF), sudo=True)
+    def _teardown(self, remove_conf):
+        """Best-effort cleanup of the apt conf, the tunnel, and the proxy socket."""
+        if remove_conf:
+            remote_run(self.target, self.password, "rm -f {}".format(APT_PROXY_CONF), sudo=True)
         if self.tunnel and self.tunnel.poll() is None:
             self.tunnel.terminate()
         if self.server:
             self.server.close()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._teardown(remove_conf=True)
         return False
 
 
@@ -679,9 +712,6 @@ def make_manifest(l4t, output):
 # ---------------------------------------------------------------- CLI
 
 
-SUBCOMMANDS = ("flash", "verify", "restore", "make-manifest")
-
-
 def build_parser():
     """argparse tree for the four subcommands (flash is the default)."""
     shared = argparse.ArgumentParser(add_help=False)
@@ -697,7 +727,9 @@ def build_parser():
     flash = sub.add_parser("flash", parents=[shared],
                            help="full pipeline: verify/restore, preflight, flash, post-flash (default)")
     flash.add_argument("--username", default=DEF_USER, help="Jetson user to create (default: %(default)s)")
-    flash.add_argument("--password", default=DEF_PASS, help="password for that user (default: %(default)s)")
+    flash.add_argument("--password", default=None,
+                       help="password for that user (default: $ER_JETSON_PASSWORD, else '{}'). "
+                            "Prefer the env var for non-defaults — argv is visible in ps".format(DEF_PASS))
     flash.add_argument("--storage", default="nvme0n1p1", help="rootfs device (default: %(default)s)")
     flash.add_argument("--yes", action="store_true", help="assume yes on restore prompts (login stays interactive)")
     flash.add_argument("--skip-post", action="store_true", help="stop after the flash itself")
@@ -716,8 +748,21 @@ def build_parser():
     return parser
 
 
+def check_host_tools(skip_post):
+    """Fail fast on missing host tools instead of after a 20-minute flash."""
+    needed = ["curl", "lsusb"] + ([] if skip_post else ["sshpass"])
+    missing = [tool for tool in needed if not shutil.which(tool)]
+    if missing:
+        bad("missing host tools: {} — install them first (sshpass/curl via apt, lsusb is usbutils)".format(
+            ", ".join(missing)))
+        return False
+    return True
+
+
 def cmd_flash(args):
     """Full pipeline."""
+    if not check_host_tools(args.skip_post):
+        return EXIT_FAILURE
     if not ensure_tree(args.l4t, load_canonical_manifest(args.manifest), args.yes):
         return EXIT_FAILURE
     preflight_rc = run_preflight(args.l4t)
@@ -727,15 +772,16 @@ def cmd_flash(args):
     if current_usb_pid() != USB_PID_RECOVERY:
         bad("board is not in forced recovery — put it there and re-run (see preflight banner)")
         return EXIT_UNDETERMINED
-    if not run_flash(args.l4t, args.username, args.password, args.storage):
+    password = args.password or os.environ.get("ER_JETSON_PASSWORD") or DEF_PASS
+    if not run_flash(args.l4t, args.username, password, args.storage):
         return EXIT_FAILURE
     if args.skip_post:
         good("flash done; post-flash setup skipped (--skip-post)")
         return EXIT_OK
     target = "{}@{}".format(args.username, DEF_HOST)
-    if not post_flash(target, args.password):
+    if not post_flash(target, password):
         return EXIT_FAILURE
-    if not sanity_checks(target, args.password):
+    if not sanity_checks(target, password):
         return EXIT_FAILURE
     hdr("== DONE — board flashed, provisioned and sane ==")
     return EXIT_OK
@@ -750,12 +796,28 @@ def cmd_verify(args):
     return EXIT_OK if healthy else EXIT_FAILURE
 
 
+# Options that consume the next argv token — needed to tell a subcommand token
+# apart from an option VALUE that happens to collide with one (e.g. --l4t flash).
+VALUE_OPTS = frozenset(("--l4t", "--manifest", "--username", "--password", "--storage", "--output"))
+
+
+def default_subcommand(argv):
+    """Prepend 'flash' when argv carries no subcommand (option values don't count)."""
+    expecting_value = False
+    for token in argv:
+        if expecting_value:
+            expecting_value = False
+            continue
+        if token.startswith("-"):
+            expecting_value = token in VALUE_OPTS  # --opt=value consumes nothing
+            continue
+        return argv  # first bare token is the subcommand; argparse validates it
+    return ["flash"] + argv
+
+
 def main(argv=None):
     """Entry point. Returns the process exit code."""
-    argv = list(sys.argv[1:] if argv is None else argv)
-    # `flash` is the default subcommand: `er_jetson_flash --username bob` works.
-    if not any(token in SUBCOMMANDS for token in argv) and "-h" not in argv and "--help" not in argv:
-        argv.insert(0, "flash")
+    argv = default_subcommand(list(sys.argv[1:] if argv is None else argv))
     args = build_parser().parse_args(argv)
     try:
         if args.command == "verify":

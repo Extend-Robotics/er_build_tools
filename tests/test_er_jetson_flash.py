@@ -239,13 +239,32 @@ class CliTest(unittest.TestCase):
     def test_flash_defaults(self):
         args = ejf.build_parser().parse_args(["flash"])
         self.assertEqual(args.username, "extend")
-        self.assertEqual(args.password, "extend")
+        # password defaults to None on argv — resolved later from
+        # $ER_JETSON_PASSWORD (preferred: argv is visible in ps) or DEF_PASS
+        self.assertIsNone(args.password)
+        self.assertEqual(ejf.DEF_PASS, "extend")
         self.assertEqual(args.storage, "nvme0n1p1")
 
     def test_default_subcommand_is_flash(self):
         with mock.patch.object(ejf, "cmd_flash", return_value=0) as cmd:
             self.assertEqual(ejf.main(["--username", "bob"]), 0)
         self.assertEqual(cmd.call_args[0][0].username, "bob")
+
+    def test_option_value_colliding_with_subcommand_name(self):
+        # regression: an option VALUE equal to a subcommand name must not
+        # suppress the default-subcommand insertion (--l4t flash used to crash)
+        with mock.patch.object(ejf, "cmd_flash", return_value=0) as cmd:
+            self.assertEqual(ejf.main(["--l4t", "flash"]), 0)
+        args = cmd.call_args[0][0]
+        self.assertEqual(args.command, "flash")
+        self.assertEqual(args.l4t, "flash")
+
+    def test_explicit_subcommand_not_shadowed(self):
+        self.assertEqual(ejf.default_subcommand(["verify", "--l4t", "x"]),
+                         ["verify", "--l4t", "x"])
+        self.assertEqual(ejf.default_subcommand(["--l4t", "x", "verify"]),
+                         ["--l4t", "x", "verify"])
+        self.assertEqual(ejf.default_subcommand(["--yes"]), ["flash", "--yes"])
 
     def test_verify_missing_tree_fails(self):
         root = tempfile.mkdtemp()
@@ -269,6 +288,20 @@ class CliTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root)
         l4t = make_tree(root)
         result = ejf.main(["verify", "--l4t", l4t, "--manifest", manifest_fixture(l4t)])
+        self.assertEqual(result, ejf.EXIT_UNDETERMINED)
+
+    def test_verify_stock_tree_with_patched_manifest_is_undetermined(self):
+        # regression: the canonical manifest hashes the PATCHED tree, so a stock
+        # tree used to be misreported as manifest drift (exit 1) instead of the
+        # designed "stock, fixable in-place" exit 2
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        l4t = make_tree(root)
+        ejf.apply_patch(l4t)
+        manifest = manifest_fixture(l4t)  # manifest of the PATCHED tree
+        with open(os.path.join(l4t, ejf.XML_REL), "w", encoding="utf-8") as handle:
+            handle.write(FAKE_XML_STOCK)  # tree back to stock, like a fresh extract
+        result = ejf.main(["verify", "--l4t", l4t, "--manifest", manifest])
         self.assertEqual(result, ejf.EXIT_UNDETERMINED)
 
     def test_verify_drifted_tree_fails(self):
