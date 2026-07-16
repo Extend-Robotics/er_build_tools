@@ -258,6 +258,25 @@ PATH="$helper_curl:$PATH" TMPDIR="$tmpbox" FAKE_FETCH=fail \
   bash -c "source '$HELPERS'; er_jetson_flash_preflight" >/dev/null 2>&1
 assert_eq "no temp files left behind by the helper" 0 "$(find "$tmpbox" -type f | wc -l)"
 
+# ---------- 7b. python payloads via _fetch_and_call_remote_script_with (er_jetson_flash) ----------
+
+# exit-code passthrough with the python3 interpreter
+rc=$(PATH="$helper_curl:$PATH" FAKE_FETCH='import sys; sys.exit(9)' \
+     bash -c "source '$HELPERS'; er_jetson_flash >/dev/null 2>&1; echo \$?")
+assert_eq "python wrapper passes exit code through" 9 "$rc"
+
+# branch coherence: the python child must also see ER_BUILD_TOOLS_BRANCH
+out=$(PATH="$helper_curl:$PATH" \
+      FAKE_FETCH='import os; print("branch=" + os.environ.get("ER_BUILD_TOOLS_BRANCH", "unset"))' \
+      bash -c "source '$HELPERS'; er_jetson_flash" 2>&1)
+assert_contains "python wrapper exports branch to child" "$out" "branch=main"
+
+# fetch failure -> ERROR + rc 1, same contract as the bash path
+out=$(PATH="$helper_curl:$PATH" FAKE_FETCH=fail \
+      bash -c "source '$HELPERS'; er_jetson_flash; echo rc=\$?" 2>&1)
+assert_contains "python wrapper fetch failure msg" "$out" "ERROR: failed to fetch"
+assert_contains "python wrapper fetch failure rc" "$out" "rc=1"
+
 # ---------- 8. review regressions: fabricated verdicts + half-edited XML ----------
 
 # empty companion (e.g. a failed `wget -qO` leaves one): rc 0 over a healthy

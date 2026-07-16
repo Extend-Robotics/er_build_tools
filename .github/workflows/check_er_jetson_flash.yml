@@ -1,0 +1,18 @@
+name: Check er_jetson_flash
+
+on: [push]
+
+jobs:
+  check_er_jetson_flash:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+
+      - name: python syntax check payload
+        shell: bash
+        run: python3 -m py_compile bin/er_jetson_flash.py
+
+      - name: run er_jetson_flash tests
+        shell: bash
+        run: python3 tests/test_er_jetson_flash.py
