@@ -14,7 +14,6 @@ import shutil
 import socket
 import sys
 import tempfile
-import time
 import unittest
 from unittest import mock
 
@@ -23,6 +22,14 @@ import er_jetson_flash as ejf  # noqa: E402  (path bootstrap must run first)
 
 FAKE_XML_STOCK = '<device type="sdmmc_user">\n <num_sectors> {} </num_sectors>\n'.format(
     ejf.STOCK_VAL)
+
+
+def manifest_fixture(l4t):
+    """Write a matching canonical-manifest fixture; returns its path."""
+    path = os.path.join(os.path.dirname(os.path.dirname(l4t)), "manifest.json")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(ejf.build_manifest(l4t), handle)
+    return path
 
 
 def make_tree(root, xml_content=FAKE_XML_STOCK):
@@ -122,38 +129,26 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(ejf.compare_manifest(self.l4t, manifest), ["flash.sh: missing"])
 
 
-class FindBackupTest(unittest.TestCase):
-    """find_backup returns the newest tarball and ignores partial/foreign files."""
+class CanonicalManifestTest(unittest.TestCase):
+    """load_canonical_manifest: override path wins; sibling repo file is found."""
 
-    def setUp(self):
-        self.backup_dir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.backup_dir)
-
-    def _touch(self, name, mtime):
-        path = os.path.join(self.backup_dir, name)
+    def test_override_path(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        path = os.path.join(root, "m.json")
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write("x")
-        os.utime(path, (mtime, mtime))
-        return path
+            json.dump({"a": "1"}, handle)
+        self.assertEqual(ejf.load_canonical_manifest(path), {"a": "1"})
 
-    def test_empty_dir(self):
-        self.assertEqual(ejf.find_backup(self.backup_dir), (None, None))
-
-    def test_newest_wins_and_partials_ignored(self):
-        now = time.time()
-        self._touch("JetPack_5.1.2_flash_tree_old.tar.zst", now - 100)
-        newest = self._touch("JetPack_5.1.2_flash_tree_new.tar.zst", now)
-        self._touch("JetPack_5.1.2_flash_tree_newer.tar.zst.partial", now + 100)
-        tarball, manifest = ejf.find_backup(self.backup_dir)
-        self.assertEqual(tarball, newest)
-        self.assertIsNone(manifest)
-
-    def test_manifest_found_when_present(self):
-        tarball = self._touch("JetPack_5.1.2_flash_tree_patched_2026-07-16.tar.zst", time.time())
-        with open(tarball + ejf.MANIFEST_SUFFIX, "w", encoding="utf-8") as handle:
-            json.dump({}, handle)
-        _, manifest = ejf.find_backup(self.backup_dir)
-        self.assertEqual(manifest, tarball + ejf.MANIFEST_SUFFIX)
+    def test_sibling_repo_file_is_used(self):
+        # The repo checkout ships the canonical manifest next to the script.
+        sibling = os.path.join(os.path.dirname(os.path.abspath(ejf.__file__)),
+                               os.path.basename(ejf.MANIFEST_REL))
+        self.assertTrue(os.path.isfile(sibling),
+                        "canonical manifest missing from the repo: {}".format(ejf.MANIFEST_REL))
+        manifest = ejf.load_canonical_manifest()
+        self.assertIsInstance(manifest, dict)
+        self.assertIn(ejf.XML_REL, manifest)
 
 
 class ParseUsbPidTest(unittest.TestCase):
@@ -200,47 +195,42 @@ class EnsureTreeTest(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.root)
-        self.backup_dir = os.path.join(self.root, "backups")
-        os.makedirs(self.backup_dir)
 
     def test_stock_tree_gets_patched_in_place(self):
         l4t = make_tree(self.root)
-        self.assertTrue(ejf.ensure_tree(l4t, self.backup_dir, assume_yes=False))
+        self.assertTrue(ejf.ensure_tree(l4t, None, assume_yes=False))
         self.assertEqual(ejf.xml_patch_state(l4t), "patched")
 
-    def test_missing_tree_no_backup_declined(self):
+    def test_missing_tree_reinstall_declined(self):
         l4t = os.path.join(self.root, "JetPack_5.1.2_Linux_JETSON_AGX_ORIN_TARGETS", "Linux_for_Tegra")
         with mock.patch.object(sys, "stdin", io.StringIO("")):  # EOF -> decline
-            self.assertFalse(ejf.ensure_tree(l4t, self.backup_dir, assume_yes=False))
+            self.assertFalse(ejf.ensure_tree(l4t, None, assume_yes=False))
 
     def test_missing_tree_guided_sdkmanager_invoked_with_yes(self):
         l4t = os.path.join(self.root, "JetPack_5.1.2_Linux_JETSON_AGX_ORIN_TARGETS", "Linux_for_Tegra")
         with mock.patch.object(ejf, "guided_sdkmanager", return_value=False) as guided:
-            self.assertFalse(ejf.ensure_tree(l4t, self.backup_dir, assume_yes=True))
+            self.assertFalse(ejf.ensure_tree(l4t, None, assume_yes=True))
         guided.assert_called_once()
 
-    def test_drifted_tree_restored_from_tarball(self):
+    def test_drifted_tree_moved_aside_and_reinstalled(self):
         l4t = make_tree(self.root)
         ejf.apply_patch(l4t)
         manifest = ejf.build_manifest(l4t)
-        tarball = os.path.join(self.backup_dir, "JetPack_5.1.2_flash_tree_patched_x.tar.zst")
-        with open(tarball, "w", encoding="utf-8") as handle:
-            handle.write("fake tarball")
-        with open(tarball + ejf.MANIFEST_SUFFIX, "w", encoding="utf-8") as handle:
-            json.dump(manifest, handle)
         # tamper with a manifest-tracked file -> verify fails -> restore path runs
         with open(os.path.join(l4t, "flash.sh"), "a", encoding="utf-8") as handle:
             handle.write("echo tampered\n")
 
-        def fake_restore(l4t_path, tarball_path):
-            self.assertEqual(tarball_path, tarball)
-            shutil.rmtree(os.path.dirname(os.path.dirname(l4t_path)))
+        def fake_sdkmanager():
+            # the bad tree must already be out of the way, like a real reinstall sees
+            self.assertFalse(os.path.isdir(l4t))
             make_tree(self.root)  # pristine stock tree, as a real extract would give
             return True
 
-        with mock.patch.object(ejf, "restore_from_tarball", side_effect=fake_restore):
-            self.assertTrue(ejf.ensure_tree(l4t, self.backup_dir, assume_yes=True))
+        with mock.patch.object(ejf, "guided_sdkmanager", side_effect=fake_sdkmanager):
+            self.assertTrue(ejf.ensure_tree(l4t, manifest, assume_yes=True))
         self.assertEqual(ejf.xml_patch_state(l4t), "patched")
+        aside = [name for name in os.listdir(self.root) if ".broken." in name]
+        self.assertEqual(len(aside), 1)
 
 
 class CliTest(unittest.TestCase):
@@ -260,7 +250,10 @@ class CliTest(unittest.TestCase):
     def test_verify_missing_tree_fails(self):
         root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, root)
-        result = ejf.main(["verify", "--l4t", os.path.join(root, "nope"), "--backup-dir", root])
+        empty = os.path.join(root, "empty.json")
+        with open(empty, "w", encoding="utf-8") as handle:
+            json.dump({}, handle)
+        result = ejf.main(["verify", "--l4t", os.path.join(root, "nope"), "--manifest", empty])
         self.assertEqual(result, ejf.EXIT_FAILURE)
 
     def test_verify_patched_tree_passes(self):
@@ -268,46 +261,53 @@ class CliTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root)
         l4t = make_tree(root)
         ejf.apply_patch(l4t)
-        result = ejf.main(["verify", "--l4t", l4t, "--backup-dir", root])
+        result = ejf.main(["verify", "--l4t", l4t, "--manifest", manifest_fixture(l4t)])
         self.assertEqual(result, ejf.EXIT_OK)
 
     def test_verify_stock_tree_is_undetermined(self):
         root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, root)
         l4t = make_tree(root)
-        result = ejf.main(["verify", "--l4t", l4t, "--backup-dir", root])
+        result = ejf.main(["verify", "--l4t", l4t, "--manifest", manifest_fixture(l4t)])
         self.assertEqual(result, ejf.EXIT_UNDETERMINED)
 
+    def test_verify_drifted_tree_fails(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        l4t = make_tree(root)
+        ejf.apply_patch(l4t)
+        manifest = manifest_fixture(l4t)
+        with open(os.path.join(l4t, "flash.sh"), "a", encoding="utf-8") as handle:
+            handle.write("echo drift\n")
+        result = ejf.main(["verify", "--l4t", l4t, "--manifest", manifest])
+        self.assertEqual(result, ejf.EXIT_FAILURE)
 
-class MakeBackupTest(unittest.TestCase):
-    """make-backup refuses unpatched trees and writes manifests for existing tarballs."""
+
+class MakeManifestTest(unittest.TestCase):
+    """make-manifest refuses unpatched trees and writes a loadable manifest."""
 
     def setUp(self):
         self.root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.root)
-        self.backup_dir = os.path.join(self.root, "backups")
+        self.output = os.path.join(self.root, "out.json")
 
     def test_refuses_unpatched_tree(self):
         l4t = make_tree(self.root)
-        self.assertFalse(ejf.make_backup(l4t, self.backup_dir, manifest_only=False))
+        self.assertFalse(ejf.make_manifest(l4t, self.output))
 
-    def test_manifest_only_requires_existing_tarball(self):
+    def test_writes_loadable_manifest(self):
         l4t = make_tree(self.root)
         ejf.apply_patch(l4t)
-        os.makedirs(self.backup_dir)
-        self.assertFalse(ejf.make_backup(l4t, self.backup_dir, manifest_only=True))
-
-    def test_manifest_only_writes_manifest(self):
-        l4t = make_tree(self.root)
-        ejf.apply_patch(l4t)
-        os.makedirs(self.backup_dir)
-        tarball = os.path.join(self.backup_dir, "JetPack_5.1.2_flash_tree_patched_x.tar.zst")
-        with open(tarball, "w", encoding="utf-8") as handle:
-            handle.write("fake")
-        self.assertTrue(ejf.make_backup(l4t, self.backup_dir, manifest_only=True))
-        with open(tarball + ejf.MANIFEST_SUFFIX, encoding="utf-8") as handle:
-            manifest = json.load(handle)
+        self.assertTrue(ejf.make_manifest(l4t, self.output))
+        manifest = ejf.load_canonical_manifest(self.output)
         self.assertIn(ejf.XML_REL, manifest)
+        self.assertEqual(ejf.compare_manifest(l4t, manifest), [])
+
+    def test_refuses_empty_tree_location(self):
+        l4t = make_tree(self.root)
+        ejf.apply_patch(l4t)
+        with mock.patch.object(ejf, "MANIFEST_GLOBS", ("*.nomatch",)):
+            self.assertFalse(ejf.make_manifest(l4t, self.output))
 
 
 if __name__ == "__main__":

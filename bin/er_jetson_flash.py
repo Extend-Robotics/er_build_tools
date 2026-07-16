@@ -3,16 +3,19 @@
 
 Pipeline (subcommand `flash`, the default):
   1. verify   — is the local flash tree present, manifest-clean and num_sectors-patched?
-                (restores it from the newest local backup tarball, or guides an
-                sdkmanager --cli reinstall, when it is not)
+                (a guided `sdkmanager --cli` reinstall restores it when not — nothing
+                is tied to any particular machine; a fresh machine just takes longer)
   2. preflight— run bin/jetson-flash-preflight.sh: GO / DO NOT FLASH gate
   3. flash    — sudo ./nvsdkmanager_flash.sh --storage ... --nv-auto-config --username ...
   4. post     — wait for boot, fix the clock, give the board internet via an
                 embedded HTTP proxy over the USB link when it has none,
                 apt install nvidia-jetpack (pinned 5.1.2-b104), sanity checks
 
-Extra subcommands: verify / restore / make-backup (tarball + hash manifest of the
-patched tree, so `verify` can detect a re-extracted or half-deleted tree).
+Verification compares the tree's configs/flash scripts against a CANONICAL manifest
+committed in this repo (bin/er_jetson_flash_manifest.json) — a JetPack 5.1.2 extract
+is deterministic, so one manifest serves every machine and catches re-extracted,
+half-deleted or hand-edited trees. Extra subcommands: verify / restore /
+make-manifest (regenerate the canonical manifest after an intentional change).
 
 Background: docs/er-jetson-flash.md, docs/jetson-flash-preflight.md.
 History: an SDK Manager GUI uninstall deleted the whole patched tree (2026-07-16);
@@ -43,9 +46,6 @@ XML_REL = os.path.join("bootloader", "t186ref", "cfg", "flash_t234_qspi_sdmmc.xm
 STOCK_VAL = 'num_sectors="124321792"'
 PATCH_VAL = 'num_sectors="124190720"'
 
-DEFAULT_BACKUP_DIR = os.path.join(HOME, "backups")
-BACKUP_GLOB = "JetPack_5.1.2_flash_tree_*.tar.zst"
-MANIFEST_SUFFIX = ".manifest.json"
 # Small, load-bearing files only (configs + flash scripts) — hashing the full
 # 38 GB tree every run would take minutes for no extra signal.
 MANIFEST_GLOBS = ("*.conf", "*.conf.common", "flash.sh", "nvsdkmanager_flash.sh",
@@ -56,6 +56,7 @@ MANIFEST_GLOBS = ("*.conf", "*.conf.common", "flash.sh", "nvsdkmanager_flash.sh"
 RAW_URL_BASE = ("https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/"
                 + os.environ.get("ER_BUILD_TOOLS_BRANCH", "main"))
 PREFLIGHT_REL = "bin/jetson-flash-preflight.sh"
+MANIFEST_REL = "bin/er_jetson_flash_manifest.json"
 
 # Both flags are required: NVIDIA pruned 5.1.2 from the default AND the plain
 # archived catalog server-side; only the combination brings it back.
@@ -196,22 +197,38 @@ def compare_manifest(l4t, manifest):
     return problems
 
 
-def find_backup(backup_dir):
-    """Newest backup tarball (and its manifest path, or None) in backup_dir."""
-    tarballs = sorted(glob.glob(os.path.join(backup_dir, BACKUP_GLOB)),
-                      key=os.path.getmtime, reverse=True)
-    if not tarballs:
-        return None, None
-    manifest = tarballs[0] + MANIFEST_SUFFIX
-    return tarballs[0], manifest if os.path.isfile(manifest) else None
+def locate_repo_file(rel_path, suffix):
+    """Find a repo file next to this script, else fetch from GitHub raw. (path, is_temp)."""
+    sibling = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.path.basename(rel_path))
+    if os.path.isfile(sibling):
+        return sibling, False
+    tmp_fd, path = tempfile.mkstemp(prefix="er_jetson_flash.", suffix=suffix)
+    os.close(tmp_fd)
+    # ?nocache= busts raw.githubusercontent's ~5-minute CDN cache (stale-revision guard)
+    url = "{}/{}?nocache={}".format(RAW_URL_BASE, rel_path, os.getpid())
+    res = subprocess.run(["curl", "-fsSL", "--max-time", "30", url, "-o", path], check=False)
+    if res.returncode != 0 or os.path.getsize(path) == 0:
+        os.unlink(path)
+        return None, False
+    return path, True
 
 
-def load_manifest(manifest_path):
-    """Load a manifest JSON; None when there is no manifest."""
-    if not manifest_path:
+def load_canonical_manifest(override_path=None):
+    """The repo's canonical manifest as a dict, or None when unobtainable."""
+    if override_path:
+        with open(override_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    path, is_temp = locate_repo_file(MANIFEST_REL, ".json")
+    if not path:
         return None
-    with open(manifest_path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except ValueError:
+        return None
+    finally:
+        if is_temp:
+            os.unlink(path)
 
 
 def verify_tree(l4t, manifest):
@@ -230,56 +247,28 @@ def verify_tree(l4t, manifest):
         good("num_sectors patch is applied")
     if manifest:
         problems = compare_manifest(l4t, manifest)
-        # The XML legitimately differs from a stock re-extract only via the patch,
-        # which is checked above — manifest hashes are taken from the PATCHED tree.
+        # The XML legitimately differs from a stock extract only via the patch,
+        # which is checked above — the canonical manifest hashes the PATCHED tree.
         if problems:
-            bad("tree differs from the known-good backup manifest:")
+            bad("tree differs from the canonical manifest:")
             for problem in problems[:10]:
                 print("         {}".format(problem))
             if len(problems) > 10:
                 print("         ... and {} more".format(len(problems) - 10))
             return False
-        good("all {} manifest files match the known-good backup".format(len(manifest)))
+        good("all {} manifest files match the canonical manifest".format(len(manifest)))
     else:
-        warn("no backup manifest available — only the patch state was checked")
+        warn("canonical manifest unavailable — only the patch state was checked")
     return state in ("patched", "stock")
 
 
 # ---------------------------------------------------------------- tree restore
 
 
-def restore_from_tarball(l4t, tarball):
-    """Extract the backup tarball over (a moved-aside) tree. True on success."""
-    # layout: <sdk_dir>/<jetpack_dir>/Linux_for_Tegra — the tarball contains <jetpack_dir>
-    jetpack_dir = os.path.abspath(os.path.join(l4t, os.pardir))
-    sdk_dir = os.path.dirname(jetpack_dir)
-    if not shutil.which("zstd"):
-        bad("zstd is not installed (sudo apt-get install zstd) — cannot extract the backup")
-        return False
-    needed = os.path.getsize(tarball) * 4  # zstd of this tree compresses ~2.5-4x
-    free = shutil.disk_usage(sdk_dir).free
-    if free < needed:
-        bad("not enough disk space to extract: {:.0f} GB free, ~{:.0f} GB needed".format(
-            free / 1e9, needed / 1e9))
-        return False
-    if os.path.isdir(jetpack_dir):
-        aside = "{}.broken.{}".format(jetpack_dir, time.strftime("%Y%m%d-%H%M%S"))
-        warn("moving the existing (bad) tree aside to {}".format(aside))
-        warn("delete it yourself once the restored tree flashes successfully")
-        os.rename(jetpack_dir, aside)
-    print("  extracting {} (this takes a few minutes)...".format(os.path.basename(tarball)))
-    res = subprocess.run(["tar", "-C", sdk_dir, "-I", "zstd", "-xf", tarball], check=False)
-    if res.returncode != 0:
-        bad("tar extraction failed (rc {})".format(res.returncode))
-        return False
-    good("backup tree extracted")
-    return True
-
-
 def guided_sdkmanager():
     """Run the interactive sdkmanager reinstall with exact operator guidance."""
     hdr("== Guided sdkmanager reinstall ==")
-    print("""  No local backup tarball found — falling back to NVIDIA SDK Manager.
+    print("""  The flash tree is missing or unhealthy — reinstalling it via NVIDIA SDK Manager.
   This needs YOUR interactive NVIDIA Developer login; everything else is preset.
 
   Answers to give when the wizard asks anything not already preset:
@@ -300,10 +289,19 @@ def guided_sdkmanager():
     return res.returncode == 0
 
 
-def ensure_tree(l4t, backup_dir, assume_yes):
-    """Verify the tree; restore (tarball, else sdkmanager) and re-verify when bad."""
-    tarball, manifest_path = find_backup(backup_dir)
-    manifest = load_manifest(manifest_path)
+def move_tree_aside(l4t):
+    """Rename a bad-but-present tree out of the way so the reinstall starts clean."""
+    jetpack_dir = os.path.abspath(os.path.join(l4t, os.pardir))
+    if not os.path.isdir(jetpack_dir):
+        return
+    aside = "{}.broken.{}".format(jetpack_dir, time.strftime("%Y%m%d-%H%M%S"))
+    warn("moving the existing (bad) tree aside to {}".format(aside))
+    warn("delete it yourself once the restored tree flashes successfully")
+    os.rename(jetpack_dir, aside)
+
+
+def ensure_tree(l4t, manifest, assume_yes):
+    """Verify the tree; guided-sdkmanager reinstall and re-verify when bad."""
     # A stock tree only differs from known-good by the patch — apply it before the
     # manifest comparison so a fresh sdkmanager extract doesn't trigger a restore.
     if xml_patch_state(l4t) == "stock" and not apply_patch(l4t):
@@ -312,20 +310,13 @@ def ensure_tree(l4t, backup_dir, assume_yes):
         return apply_patch(l4t)
 
     hdr("== Restore ==")
-    if tarball:
-        print("  newest backup: {}".format(tarball))
-        if not confirm("  Restore the flash tree from this backup?", assume_yes):
-            warn("restore declined")
-            return False
-        if not restore_from_tarball(l4t, tarball):
-            return False
-    else:
-        if not confirm("  Reinstall the flash tree via sdkmanager (interactive login)?", assume_yes):
-            warn("reinstall declined")
-            return False
-        if not guided_sdkmanager():
-            bad("sdkmanager did not complete successfully")
-            return False
+    if not confirm("  Reinstall the flash tree via sdkmanager (interactive login)?", assume_yes):
+        warn("reinstall declined")
+        return False
+    move_tree_aside(l4t)
+    if not guided_sdkmanager():
+        bad("sdkmanager did not complete successfully")
+        return False
     if xml_patch_state(l4t) == "stock" and not apply_patch(l4t):
         return False
     if not verify_tree(l4t, manifest):
@@ -337,26 +328,10 @@ def ensure_tree(l4t, backup_dir, assume_yes):
 # ---------------------------------------------------------------- preflight
 
 
-def locate_preflight():
-    """Prefer the sibling repo checkout; otherwise fetch from GitHub raw. (path, is_temp)."""
-    sibling = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           os.path.basename(PREFLIGHT_REL))
-    if os.path.isfile(sibling):
-        return sibling, False
-    tmp_fd, path = tempfile.mkstemp(prefix="er_preflight.", suffix=".sh")
-    os.close(tmp_fd)
-    url = "{}/{}?nocache={}".format(RAW_URL_BASE, PREFLIGHT_REL, os.getpid())
-    res = subprocess.run(["curl", "-fsSL", "--max-time", "30", url, "-o", path], check=False)
-    if res.returncode != 0:
-        os.unlink(path)
-        return None, False
-    return path, True
-
-
 def run_preflight(l4t):
     """Run the GO/DO-NOT-FLASH preflight; returns its exit code (2 when unavailable)."""
     hdr("== Preflight ==")
-    script, is_temp = locate_preflight()
+    script, is_temp = locate_repo_file(PREFLIGHT_REL, ".sh")
     if not script:
         bad("could not obtain jetson-flash-preflight.sh — refusing to report GO")
         return EXIT_UNDETERMINED
@@ -681,60 +656,38 @@ def post_flash(target, password):
         return False
 
 
-# ---------------------------------------------------------------- backup
+# ---------------------------------------------------------------- manifest maintenance
 
 
-def make_backup(l4t, backup_dir, manifest_only):
-    """Tar + manifest the (patched) tree so verify/restore have a known-good reference."""
+def make_manifest(l4t, output):
+    """Regenerate the canonical manifest from a healthy patched tree (maintainers only)."""
     if xml_patch_state(l4t) != "patched":
-        bad("refusing to back up an unpatched/unhealthy tree — run 'verify' first")
+        bad("refusing to snapshot an unpatched/unhealthy tree — run 'verify' first")
         return False
-    os.makedirs(backup_dir, exist_ok=True)
-    stamp = time.strftime("%Y-%m-%d")
-    tarball = os.path.join(backup_dir, "JetPack_5.1.2_flash_tree_patched_{}.tar.zst".format(stamp))
-
-    print("  building manifest ({} file patterns)...".format(len(MANIFEST_GLOBS)))
     manifest = build_manifest(l4t)
-    if manifest_only:
-        existing, _ = find_backup(backup_dir)
-        if not existing:
-            bad("--manifest-only needs an existing tarball to attach the manifest to")
-            return False
-        tarball = existing
-    with open(tarball + MANIFEST_SUFFIX, "w", encoding="utf-8") as handle:
+    if not manifest:
+        bad("no manifest files found under {} — wrong --l4t?".format(l4t))
+        return False
+    with open(output, "w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=1, sort_keys=True)
-    good("manifest written: {} ({} files)".format(tarball + MANIFEST_SUFFIX, len(manifest)))
-    if manifest_only:
-        return True
-
-    if not shutil.which("zstd"):
-        bad("zstd is not installed (sudo apt-get install zstd)")
-        return False
-    jetpack_dir = os.path.abspath(os.path.join(l4t, os.pardir))
-    print("  creating {} (~38 GB in, expect 10+ min)...".format(tarball))
-    res = subprocess.run(
-        ["tar", "-C", os.path.dirname(jetpack_dir), "-I", "zstd -T0", "-cf", tarball + ".partial",
-         os.path.basename(jetpack_dir)], check=False)
-    if res.returncode != 0:
-        bad("tar failed (rc {})".format(res.returncode))
-        return False
-    os.replace(tarball + ".partial", tarball)
-    good("backup written: {} ({:.1f} GB)".format(tarball, os.path.getsize(tarball) / 1e9))
+        handle.write("\n")
+    good("manifest written: {} ({} files)".format(output, len(manifest)))
+    print("  commit this as {} — every machine verifies against it".format(MANIFEST_REL))
     return True
 
 
 # ---------------------------------------------------------------- CLI
 
 
-SUBCOMMANDS = ("flash", "verify", "restore", "make-backup")
+SUBCOMMANDS = ("flash", "verify", "restore", "make-manifest")
 
 
 def build_parser():
     """argparse tree for the four subcommands (flash is the default)."""
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--l4t", default=DEFAULT_L4T, help="Linux_for_Tegra tree (default: %(default)s)")
-    shared.add_argument("--backup-dir", default=DEFAULT_BACKUP_DIR,
-                        help="where backup tarballs live (default: %(default)s)")
+    shared.add_argument("--manifest", default=None,
+                        help="canonical manifest path (default: the repo's {})".format(MANIFEST_REL))
 
     parser = argparse.ArgumentParser(
         prog="er_jetson_flash", parents=[shared],
@@ -753,19 +706,19 @@ def build_parser():
                    help="check tree presence, patch and manifest; changes nothing")
 
     restore = sub.add_parser("restore", parents=[shared],
-                             help="restore the tree from backup (or guided sdkmanager) now")
+                             help="verify and repair/reinstall the flash tree now, don't flash")
     restore.add_argument("--yes", action="store_true", help="assume yes on prompts")
 
-    backup = sub.add_parser("make-backup", parents=[shared],
-                            help="tar + manifest the current patched tree")
-    backup.add_argument("--manifest-only", action="store_true",
-                        help="regenerate the manifest for the newest existing tarball")
+    make = sub.add_parser("make-manifest", parents=[shared],
+                          help="regenerate the canonical manifest from the local patched tree")
+    make.add_argument("--output", default="er_jetson_flash_manifest.json",
+                      help="where to write it (default: %(default)s in the current directory)")
     return parser
 
 
 def cmd_flash(args):
     """Full pipeline."""
-    if not ensure_tree(args.l4t, args.backup_dir, args.yes):
+    if not ensure_tree(args.l4t, load_canonical_manifest(args.manifest), args.yes):
         return EXIT_FAILURE
     preflight_rc = run_preflight(args.l4t)
     if preflight_rc != 0:
@@ -790,9 +743,7 @@ def cmd_flash(args):
 
 def cmd_verify(args):
     """Verify-only entry point."""
-    _, manifest_path = find_backup(args.backup_dir)
-    manifest = load_manifest(manifest_path)
-    healthy = verify_tree(args.l4t, manifest)
+    healthy = verify_tree(args.l4t, load_canonical_manifest(args.manifest))
     if healthy and xml_patch_state(args.l4t) == "stock":
         warn("run 'er_jetson_flash restore' or apply the patch before flashing a post-PCN module")
         return EXIT_UNDETERMINED
@@ -810,12 +761,12 @@ def main(argv=None):
         if args.command == "verify":
             return cmd_verify(args)
         if args.command == "restore":
-            if ensure_tree(args.l4t, args.backup_dir, args.yes):
+            if ensure_tree(args.l4t, load_canonical_manifest(args.manifest), args.yes):
                 good("tree is healthy and patched")
                 return EXIT_OK
             return EXIT_FAILURE
-        if args.command == "make-backup":
-            return EXIT_OK if make_backup(args.l4t, args.backup_dir, args.manifest_only) else EXIT_FAILURE
+        if args.command == "make-manifest":
+            return EXIT_OK if make_manifest(args.l4t, args.output) else EXIT_FAILURE
         return cmd_flash(args)
     except KeyboardInterrupt:
         print()

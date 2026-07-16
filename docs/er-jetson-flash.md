@@ -9,8 +9,11 @@ er_jetson_flash                      # everything, with extend/extend defaults
 er_jetson_flash --username qa --password s3cret
 er_jetson_flash verify               # read-only health check of the flash tree
 er_jetson_flash restore              # fix/restore the flash tree, don't flash
-er_jetson_flash make-backup          # snapshot the current healthy tree
+er_jetson_flash make-manifest        # regenerate the canonical manifest (maintainers)
 ```
+
+Nothing is tied to a particular machine: a fresh (or mangled) deployment machine
+just takes longer the first time, while the tool walks a guided reinstall.
 
 ## What the full pipeline does
 
@@ -18,15 +21,18 @@ er_jetson_flash make-backup          # snapshot the current healthy tree
    - the PCN210100 `num_sectors` eMMC patch is applied (applied in-place when the
      tree is healthy-but-stock; see [jetson-flash-preflight.md](jetson-flash-preflight.md)
      for why unpatched flashes of post-PCN modules fail)
-   - every config/script hashed in the newest backup's **manifest** matches —
-     this catches silently re-extracted, half-deleted, or hand-edited trees
-2. **Restore when broken**, in order of preference:
-   - untar the newest `~/backups/JetPack_5.1.2_flash_tree_*.tar.zst` (fast, offline,
-     no NVIDIA account). The bad tree is moved aside, never deleted.
-   - else a **guided sdkmanager reinstall**: the tool prints the exact answers to
-     give, then runs `sdkmanager --cli --action install ... --show-all-versions
-     --archived-versions`. Both catalog flags are required — NVIDIA's server-side
-     catalog hides JetPack 5.1.2 without them. You supply the interactive login.
+   - every config/flash-script hashed in the repo's **canonical manifest**
+     ([`bin/er_jetson_flash_manifest.json`](../bin/er_jetson_flash_manifest.json))
+     matches. A JetPack 5.1.2 extract is deterministic, so one committed manifest
+     serves every machine, and catches silently re-extracted, half-deleted, or
+     hand-edited trees. (Hashing all 38 GB would add minutes for no extra signal —
+     only the ~117 small load-bearing files are hashed.)
+2. **Restore when broken**: the bad tree is moved aside (never deleted), then a
+   **guided sdkmanager reinstall** — the tool prints the exact answers to give and
+   runs `sdkmanager --cli --action install ... --show-all-versions
+   --archived-versions`. Both catalog flags are required — NVIDIA's server-side
+   catalog hides JetPack 5.1.2 without them. You supply the interactive login.
+   Downloads reuse `~/Downloads/nvidia/sdkm_downloads` when present.
 3. **Preflight gate**: runs [`er_jetson_flash_preflight`](jetson-flash-preflight.md);
    anything but GO stops the pipeline.
 4. **Flash**: `sudo ./nvsdkmanager_flash.sh --storage nvme0n1p1 --nv-auto-config
@@ -45,40 +51,40 @@ er_jetson_flash make-backup          # snapshot the current healthy tree
      eMMC `dmesg` baseline (post-PCN DG4064 modules have a known CQE quirk on
      stock JP 5.1.2 — a clean baseline now makes later errors attributable)
 
-## Backups
+## The canonical manifest
 
-`er_jetson_flash make-backup` writes two things to `~/backups/`:
+`bin/er_jetson_flash_manifest.json` is sha256 of every config and flash script in
+a known-good patched tree (generated from the tree that flashed the QA cortexes
+on 2026-07-16). `verify` compares against it; `make-manifest` regenerates it after
+an intentional change (commit the result via PR).
 
-- `JetPack_5.1.2_flash_tree_patched_<date>.tar.zst` — the whole patched JetPack
-  directory (~15 GB compressed; needs `zstd`)
-- `...tar.zst.manifest.json` — sha256 of every config/flash-script in the tree,
-  used by `verify` to detect drift cheaply (hashing all 38 GB every run would not
-  be worth the signal)
+Note the manifest hashes the **patched** tree — a fresh extract gets the
+`num_sectors` patch applied in-place first, then matches.
 
-`make-backup --manifest-only` regenerates the manifest for the newest existing
-tarball, e.g. after an intentional tree change you consider good.
-
-Keep a copy of the tarball off the deployment machine. It is the only restore
-path that does not depend on NVIDIA keeping 5.1.2 in their archived catalog.
+**Delisting insurance**: everything here depends on NVIDIA keeping JetPack 5.1.2
+reachable in the archived catalog (they already pruned it from the default view).
+Cheap mitigation, outside this tool: archive `Jetson_Linux_R35.4.1_aarch64.tbz2` +
+`Tegra_Linux_Sample-Root-Filesystem_R35.4.1_aarch64.tbz2` (~2.2 GB, already in
+`~/Downloads/nvidia/sdkm_downloads`) somewhere central — a tree can be rebuilt
+from those by hand without SDK Manager.
 
 ## Why this tool exists
 
 On 2026-07-16 an SDK Manager GUI *Uninstall* deleted the entire patched flash
 tree mid-QA-cycle (the GUI offers this next to Install; do not use it on the
 deployment machine). Recovery took a rebuilt catalog trick, a re-extract, a
-re-patch and a hand-held flash. This tool makes that whole loop one command,
-and the backup tarball makes the worst case boring.
+re-patch and a hand-held flash. This tool makes that whole loop one command.
 
 ## Requirements
 
-- deployment machine: `python3` (3.8+), `sshpass`, `zstd`, `curl`; `sdkmanager`
-  only for the no-backup restore path
+- deployment machine: `python3` (3.8+), `sshpass`, `curl`; `sdkmanager` only for
+  the restore path
 - Jetson connected over the flashing USB-C port, in forced recovery for the
   flash itself (the preflight prints how)
 
 ## Env overrides
 
-- `ER_BUILD_TOOLS_BRANCH` — branch the preflight companion scripts are fetched
-  from when not running from a repo checkout (set automatically by the
-  `er_jetson_flash` helper function)
-- `--l4t`, `--backup-dir` — non-default tree / backup locations
+- `ER_BUILD_TOOLS_BRANCH` — branch the preflight script and canonical manifest
+  are fetched from when not running from a repo checkout (set automatically by
+  the `er_jetson_flash` helper function)
+- `--l4t`, `--manifest` — non-default tree / manifest locations

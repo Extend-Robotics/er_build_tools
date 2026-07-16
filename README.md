@@ -31,5 +31,5 @@ Below are links to further docs on specific tools, but there are pleanty more un
 - [update_source_repos](docs/update-source-repos.md) - Takes your gh PAT, pulls any source code updates inside your new arch container and then rebuilds your workspace
 - [usb-camera-healthcheck](docs/usb-camera-healthcheck.md) - report USB link speed + verdict for every UVC camera (sysfs only, no root, curl-bash).
 - [jetson-flash-preflight](docs/jetson-flash-preflight.md) - GO / DO NOT FLASH pre-flash check for the AGX Orin 64GB eMMC patch (PCN210100): module detection over USB + flash-tree patch check (curl-bash).
-- [er_jetson_flash](docs/er-jetson-flash.md) - one-command AGX Orin QA-cortex flash: verify/restore the JetPack 5.1.2 tree (backup tarball or guided sdkmanager), preflight gate, flash to NVMe, then post-flash setup (clock, apt over the USB link when offline, nvidia-jetpack, sanity checks).
+- [er_jetson_flash](docs/er-jetson-flash.md) - one-command AGX Orin QA-cortex flash: verify the JetPack 5.1.2 tree against a canonical manifest (guided sdkmanager reinstall when broken), preflight gate, flash to NVMe, then post-flash setup (clock, apt over the USB link when offline, nvidia-jetpack, sanity checks).
 - [urdf2usd](docs/urdf2usd.md) - URDF --> USD converter (temporarily depricated, see [here](https://github.com/Extend-Robotics/er_interface/pull/156) for more info)
