@@ -68,9 +68,11 @@ SDKMANAGER_CMD = ["sdkmanager", "--cli", "--action", "install", "--login-type", 
 DEF_USER = "extend"
 DEF_PASS = "extend"
 DEF_HOST = "192.168.55.1"
+# NVIDIA (vendor 0955) USB product ids: 7023 = AGX Orin in forced recovery (RCM,
+# the only state flash.sh can start from), 7020 = booted L4T in USB device mode.
+# (7035, the mid-flash initrd, is handled by the bash preflight, not needed here.)
 USB_PID_RECOVERY = "7023"
 USB_PID_BOOTED = "7020"
-USB_PID_INITRD = "7035"
 
 SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]
