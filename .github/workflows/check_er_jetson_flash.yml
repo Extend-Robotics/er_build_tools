@@ -1,0 +1,25 @@
+name: Check er_jetson_flash
+
+on: [push]
+
+jobs:
+  check_er_jetson_flash:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+
+      # the payload targets the deployment machines' Ubuntu 20.04 / Python 3.8 —
+      # test on that, not on whatever ubuntu-latest ships
+      - name: set up Python 3.8
+        uses: actions/setup-python@v3
+        with:
+          python-version: "3.8"
+
+      - name: python syntax check payload
+        shell: bash
+        run: python3 -m py_compile bin/er_jetson_flash.py
+
+      - name: run er_jetson_flash tests
+        shell: bash
+        run: python3 tests/test_er_jetson_flash.py

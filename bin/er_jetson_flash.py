@@ -1,0 +1,842 @@
+#!/usr/bin/env python3
+"""er_jetson_flash — one-command flash pipeline for AGX Orin QA cortexes (JetPack 5.1.2).
+
+Pipeline (subcommand `flash`, the default):
+  1. verify   — is the local flash tree present, manifest-clean and num_sectors-patched?
+                (a guided `sdkmanager --cli` reinstall restores it when not — nothing
+                is tied to any particular machine; a fresh machine just takes longer)
+  2. preflight— run bin/jetson-flash-preflight.sh: GO / DO NOT FLASH gate
+  3. flash    — sudo ./nvsdkmanager_flash.sh --storage ... --nv-auto-config --username ...
+  4. post     — wait for boot, fix the clock, give the board internet via an
+                embedded HTTP proxy over the USB link when it has none,
+                apt install nvidia-jetpack (pinned 5.1.2-b104), sanity checks
+
+Verification compares the tree's configs/flash scripts against a CANONICAL manifest
+committed in this repo (bin/er_jetson_flash_manifest.json) — a JetPack 5.1.2 extract
+is deterministic, so one manifest serves every machine and catches re-extracted,
+half-deleted or hand-edited trees. Extra subcommands: verify / restore /
+make-manifest (regenerate the canonical manifest after an intentional change).
+
+Background: docs/er-jetson-flash.md, docs/jetson-flash-preflight.md.
+History: an SDK Manager GUI uninstall deleted the whole patched tree (2026-07-16);
+NVIDIA's catalog only lists 5.1.2 with BOTH --show-all-versions --archived-versions.
+
+Python 3.8, stdlib only. Exit codes: 0 = success, 1 = failure, 2 = undetermined/aborted.
+"""
+
+import argparse
+import glob
+import hashlib
+import json
+import os
+import select
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from urllib.parse import urlsplit
+
+HOME = os.path.expanduser("~")
+DEFAULT_L4T = os.path.join(HOME, "nvidia", "nvidia_sdk",
+                           "JetPack_5.1.2_Linux_JETSON_AGX_ORIN_TARGETS", "Linux_for_Tegra")
+XML_REL = os.path.join("bootloader", "t186ref", "cfg", "flash_t234_qspi_sdmmc.xml")
+STOCK_VAL = 'num_sectors="124321792"'
+PATCH_VAL = 'num_sectors="124190720"'
+
+# Small, load-bearing files only (configs + flash scripts) — hashing the full
+# 38 GB tree every run would take minutes for no extra signal.
+MANIFEST_GLOBS = ("*.conf", "*.conf.common", "flash.sh", "nvsdkmanager_flash.sh",
+                  os.path.join("bootloader", "t186ref", "cfg", "*.xml"),
+                  os.path.join("tools", "kernel_flash", "*.sh"),
+                  os.path.join("tools", "kernel_flash", "*.xml"))
+
+RAW_URL_BASE = ("https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/"
+                + os.environ.get("ER_BUILD_TOOLS_BRANCH", "main"))
+PREFLIGHT_REL = "bin/jetson-flash-preflight.sh"
+MANIFEST_REL = "bin/er_jetson_flash_manifest.json"
+
+# Both flags are required: NVIDIA pruned 5.1.2 from the default AND the plain
+# archived catalog server-side; only the combination brings it back.
+SDKMANAGER_CMD = ["sdkmanager", "--cli", "--action", "install", "--login-type", "devzone",
+                  "--product", "Jetson", "--target-os", "Linux", "--version", "5.1.2",
+                  "--show-all-versions", "--archived-versions",
+                  "--target", "JETSON_AGX_ORIN_TARGETS", "--license", "accept"]
+
+DEF_USER = "extend"
+DEF_PASS = "extend"
+DEF_HOST = "192.168.55.1"
+# NVIDIA (vendor 0955) USB product ids: 7023 = AGX Orin in forced recovery (RCM,
+# the only state flash.sh can start from), 7020 = booted L4T in USB device mode.
+# (7035, the mid-flash initrd, is handled by the bash preflight, not needed here.)
+USB_PID_RECOVERY = "7023"
+USB_PID_BOOTED = "7020"
+
+SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]
+
+BOOT_TIMEOUT_S = 300
+SSH_TIMEOUT_S = 240
+APT_PROXY_CONF = "/etc/apt/apt.conf.d/99er-usb-proxy"
+
+USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+RED = "\033[0;31m" if USE_COLOR else ""
+GREEN = "\033[0;32m" if USE_COLOR else ""
+YELLOW = "\033[0;33m" if USE_COLOR else ""
+BOLD = "\033[1m" if USE_COLOR else ""
+OFF = "\033[0m" if USE_COLOR else ""
+
+EXIT_OK = 0
+EXIT_FAILURE = 1
+EXIT_UNDETERMINED = 2
+
+
+def good(msg):
+    """Print a green [OK] line."""
+    print("  {}[OK]{}   {}".format(GREEN, OFF, msg))
+
+
+def warn(msg):
+    """Print a yellow [WARN] line."""
+    print("  {}[WARN]{} {}".format(YELLOW, OFF, msg))
+
+
+def bad(msg):
+    """Print a red [FAIL] line."""
+    print("  {}[FAIL]{} {}".format(RED, OFF, msg))
+
+
+def hdr(msg):
+    """Print a bold section header."""
+    print("{}{}{}".format(BOLD, msg, OFF))
+
+
+def confirm(prompt, assume_yes):
+    """Ask a y/N question; --yes answers yes without prompting; EOF answers no."""
+    if assume_yes:
+        print("{} [auto-yes]".format(prompt))
+        return True
+    try:
+        return input("{} [y/N] ".format(prompt)).strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+# ---------------------------------------------------------------- tree verify
+
+
+def classify_patch(xml_content):
+    """Classify a flash XML's num_sectors state: patched / stock / half / weird."""
+    has_stock = STOCK_VAL in xml_content
+    has_patch = PATCH_VAL in xml_content
+    if has_stock and has_patch:
+        return "half"
+    if has_patch:
+        return "patched"
+    if has_stock:
+        return "stock"
+    return "weird"
+
+
+def xml_patch_state(l4t):
+    """Return the patch state of the tree's flash XML, or 'missing'."""
+    xml = os.path.join(l4t, XML_REL)
+    if not os.path.isfile(xml):
+        return "missing"
+    with open(xml, "r", encoding="utf-8") as handle:
+        return classify_patch(handle.read())
+
+
+def apply_patch(l4t):
+    """Idempotently apply the num_sectors patch (keeping a .orig). True on success."""
+    xml = os.path.join(l4t, XML_REL)
+    state = xml_patch_state(l4t)
+    if state == "patched":
+        return True
+    if state != "stock":
+        bad("cannot patch {}: state is '{}' — refusing to guess".format(xml, state))
+        return False
+    if not os.path.exists(xml + ".orig"):
+        shutil.copy2(xml, xml + ".orig")
+    with open(xml, "r", encoding="utf-8") as handle:
+        content = handle.read()
+    with open(xml, "w", encoding="utf-8") as handle:
+        handle.write(content.replace(STOCK_VAL, PATCH_VAL))
+    good("num_sectors patch applied ({} -> {})".format(STOCK_VAL, PATCH_VAL))
+    return True
+
+
+def sha256_file(path):
+    """Streaming sha256 of a file."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_manifest(l4t):
+    """Hash the load-bearing files of the tree: {relative path: sha256}."""
+    manifest = {}
+    for pattern in MANIFEST_GLOBS:
+        for path in sorted(glob.glob(os.path.join(l4t, pattern))):
+            if os.path.isfile(path):
+                manifest[os.path.relpath(path, l4t)] = sha256_file(path)
+    return manifest
+
+
+def compare_manifest(l4t, manifest):
+    """Return a list of 'rel_path: problem' strings; empty means the tree matches."""
+    problems = []
+    for rel_path, expected in sorted(manifest.items()):
+        path = os.path.join(l4t, rel_path)
+        if not os.path.isfile(path):
+            problems.append("{}: missing".format(rel_path))
+        elif sha256_file(path) != expected:
+            problems.append("{}: content differs".format(rel_path))
+    return problems
+
+
+def locate_repo_file(rel_path, suffix):
+    """Find a repo file next to this script, else fetch from GitHub raw. (path, is_temp).
+
+    The sibling shortcut only applies when this script actually runs from a repo
+    checkout (parent dir has the repo's .helper_bash_functions). When fetched to
+    ${TMPDIR} by the er_jetson_flash wrapper, a same-named file in the
+    world-writable temp dir must NOT shadow the pinned, cache-busted GitHub fetch.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    in_repo_checkout = os.path.isfile(os.path.join(script_dir, os.pardir, ".helper_bash_functions"))
+    sibling = os.path.join(script_dir, os.path.basename(rel_path))
+    if in_repo_checkout and os.path.isfile(sibling):
+        return sibling, False
+    tmp_fd, path = tempfile.mkstemp(prefix="er_jetson_flash.", suffix=suffix)
+    os.close(tmp_fd)
+    # ?nocache= busts raw.githubusercontent's ~5-minute CDN cache (stale-revision guard)
+    nonce = "{}-{}".format(os.getpid(), int.from_bytes(os.urandom(4), "big"))
+    url = "{}/{}?nocache={}".format(RAW_URL_BASE, rel_path, nonce)
+    res = subprocess.run(["curl", "-fsSL", "--max-time", "30", url, "-o", path], check=False)
+    if res.returncode != 0 or os.path.getsize(path) == 0:
+        os.unlink(path)
+        return None, False
+    return path, True
+
+
+def load_canonical_manifest(override_path=None):
+    """The repo's canonical manifest as a dict, or None when unobtainable."""
+    if override_path:
+        with open(override_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    path, is_temp = locate_repo_file(MANIFEST_REL, ".json")
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except ValueError:
+        return None
+    finally:
+        if is_temp:
+            os.unlink(path)
+
+
+def verify_tree(l4t, manifest):
+    """Check tree presence, patch state and (when a manifest exists) content hashes."""
+    hdr("== Flash tree: {} ==".format(l4t))
+    state = xml_patch_state(l4t)
+    if state == "missing":
+        bad("flash config not found — tree deleted, moved, or never installed")
+        return False
+    if state == "stock":
+        warn("tree present but num_sectors patch NOT applied (fixable in-place)")
+    elif state != "patched":
+        bad("flash XML in unexpected state '{}' — half-edited tree?".format(state))
+        return False
+    else:
+        good("num_sectors patch is applied")
+    if manifest:
+        problems = compare_manifest(l4t, manifest)
+        # The canonical manifest hashes the PATCHED tree, so on a stock (not yet
+        # patched) tree the flash XML differing is EXPECTED, not drift — the patch
+        # state is already reported above and `verify` maps stock to exit 2.
+        if state == "stock":
+            problems = [p for p in problems if p != "{}: content differs".format(XML_REL)]
+        if problems:
+            bad("tree differs from the canonical manifest:")
+            for problem in problems[:10]:
+                print("         {}".format(problem))
+            if len(problems) > 10:
+                print("         ... and {} more".format(len(problems) - 10))
+            return False
+        good("all {} manifest files match the canonical manifest".format(len(manifest)))
+    else:
+        warn("canonical manifest unavailable — only the patch state was checked")
+    return state in ("patched", "stock")
+
+
+# ---------------------------------------------------------------- tree restore
+
+
+def guided_sdkmanager():
+    """Run the interactive sdkmanager reinstall with exact operator guidance."""
+    hdr("== Guided sdkmanager reinstall ==")
+    print("""  The flash tree is missing or unhealthy — reinstalling it via NVIDIA SDK Manager.
+  This needs YOUR interactive NVIDIA Developer login; everything else is preset.
+
+  Answers to give when the wizard asks anything not already preset:
+    - system configuration:      DESELECT 'Host Machine', keep 'Target Hardware'
+    - additional SDKs:           None
+    - 'flash the module?':       No   (this tool patches the tree, then flashes)
+    - 'install SDK components on your Jetson?':  Skip / decline
+                                 (done post-flash via apt, pinned to 5.1.2-b104)
+
+  Downloads reuse ~/Downloads/nvidia/sdkm_downloads when present (mostly offline).
+""")
+    print("  running: {}\n".format(" ".join(SDKMANAGER_CMD)))
+    try:
+        res = subprocess.run(SDKMANAGER_CMD, check=False)
+    except FileNotFoundError:
+        bad("sdkmanager is not installed on this machine")
+        return False
+    return res.returncode == 0
+
+
+def move_tree_aside(l4t):
+    """Rename a bad-but-present tree out of the way so the reinstall starts clean."""
+    jetpack_dir = os.path.abspath(os.path.join(l4t, os.pardir))
+    if not os.path.isdir(jetpack_dir):
+        return
+    aside = "{}.broken.{}".format(jetpack_dir, time.strftime("%Y%m%d-%H%M%S"))
+    warn("moving the existing (bad) tree aside to {}".format(aside))
+    warn("delete it yourself once the restored tree flashes successfully")
+    os.rename(jetpack_dir, aside)
+
+
+def ensure_tree(l4t, manifest, assume_yes):
+    """Verify the tree; guided-sdkmanager reinstall and re-verify when bad."""
+    # A stock tree only differs from known-good by the patch — apply it before the
+    # manifest comparison so a fresh sdkmanager extract doesn't trigger a restore.
+    if xml_patch_state(l4t) == "stock" and not apply_patch(l4t):
+        return False
+    if verify_tree(l4t, manifest):
+        return apply_patch(l4t)
+
+    hdr("== Restore ==")
+    if not confirm("  Reinstall the flash tree via sdkmanager (interactive login)?", assume_yes):
+        warn("reinstall declined")
+        return False
+    move_tree_aside(l4t)
+    if not guided_sdkmanager():
+        bad("sdkmanager did not complete successfully")
+        return False
+    if xml_patch_state(l4t) == "stock" and not apply_patch(l4t):
+        return False
+    if not verify_tree(l4t, manifest):
+        bad("tree still not healthy after restore")
+        return False
+    return apply_patch(l4t)
+
+
+# ---------------------------------------------------------------- preflight
+
+
+def run_preflight(l4t):
+    """Run the GO/DO-NOT-FLASH preflight; returns its exit code (2 when unavailable)."""
+    hdr("== Preflight ==")
+    script, is_temp = locate_repo_file(PREFLIGHT_REL, ".sh")
+    if not script:
+        bad("could not obtain jetson-flash-preflight.sh — refusing to report GO")
+        return EXIT_UNDETERMINED
+    try:
+        env = dict(os.environ, L4T=l4t)
+        return subprocess.run(["bash", script], env=env, check=False).returncode
+    finally:
+        if is_temp:
+            os.unlink(script)
+
+
+# ---------------------------------------------------------------- flash
+
+
+def parse_usb_pid(lsusb_text):
+    """First NVIDIA (0955:xxxx) product id in lsusb output, or None."""
+    for line in lsusb_text.splitlines():
+        if "ID 0955:" in line:
+            return line.split("ID 0955:", 1)[1][:4].lower()
+    return None
+
+
+def current_usb_pid():
+    """NVIDIA USB product id currently on the bus, or None."""
+    res = subprocess.run(["lsusb"], stdout=subprocess.PIPE, universal_newlines=True, check=False)
+    return parse_usb_pid(res.stdout) if res.returncode == 0 else None
+
+
+def run_flash(l4t, username, password, storage):
+    """Run nvsdkmanager_flash.sh under sudo, feeding the preseed password on stdin."""
+    hdr("== Flash ==")
+    print("  validating sudo (the flash needs root)...")
+    if subprocess.run(["sudo", "-v"], check=False).returncode != 0:
+        bad("sudo credentials unavailable")
+        return False
+    cmd = ["sudo", "./nvsdkmanager_flash.sh", "--storage", storage,
+           "--nv-auto-config", "--username", username]
+    print("  running: {}  (in {})".format(" ".join(cmd), l4t))
+    print("  expect ~15-25 min; do NOT unplug the board, even on failure it is recoverable\n")
+    # nv_preseed.sh reads the new user's password from stdin (`read -s`), so a
+    # pipe makes the whole flash non-interactive. The password never hits argv.
+    with subprocess.Popen(cmd, cwd=l4t, stdin=subprocess.PIPE, universal_newlines=True) as proc:
+        try:
+            proc.stdin.write(password + "\n")
+            proc.stdin.flush()
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass  # flash died before reading the password; the rc check below reports it
+            # (close() is inside the guard too: it re-flushes buffered bytes and
+            # raises the same BrokenPipeError when the child is already gone)
+        returncode = proc.wait()
+    if returncode != 0:
+        bad("flash failed (rc {}) — see {}/initrdlog/ for details".format(returncode, l4t))
+        return False
+    good("flash reported success")
+    return True
+
+
+# ---------------------------------------------------------------- post-flash
+
+
+def ssh_cmd(target):
+    """Base argv for password ssh to the Jetson (password comes via $SSHPASS)."""
+    return ["sshpass", "-e", "ssh"] + SSH_OPTS + [target]
+
+
+def remote_run(target, password, command, sudo=False, input_text=None, capture=True):
+    """Run a command on the Jetson; sudo commands get the password on stdin (never argv)."""
+    if sudo:
+        command = "sudo -S -p '' " + command
+        input_text = password + "\n" + (input_text or "")
+    return subprocess.run(
+        ssh_cmd(target) + [command],
+        env=dict(os.environ, SSHPASS=password),
+        input=input_text,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.STDOUT if capture else None,
+        universal_newlines=True,
+        check=False,
+    )
+
+
+def wait_for(description, predicate, timeout_s, interval_s=5):
+    """Poll predicate() until true or timeout; prints progress dots."""
+    print("  waiting for {} (up to {}s)...".format(description, timeout_s), end="", flush=True)
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            print(" up")
+            return True
+        print(".", end="", flush=True)
+        time.sleep(interval_s)
+    print(" TIMEOUT")
+    return False
+
+
+def port_open(host, port, timeout=3):
+    """True when a TCP connect to host:port succeeds."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def jetson_has_internet(target, password):
+    """True when the Jetson can reach the NVIDIA apt repo by itself."""
+    res = remote_run(target, password,
+                     "curl -fsI --max-time 10 https://repo.download.nvidia.com/jetson/common/dists/r35.4/InRelease")
+    return res.returncode == 0
+
+
+# --- embedded HTTP proxy (GET + CONNECT), served over a reverse ssh tunnel, so
+# --- a USB-only Jetson can reach apt repos through this machine. Stdlib only.
+
+
+def _proxy_pipe(sock_a, sock_b):
+    """Shovel bytes between two sockets until either side closes."""
+    socks = [sock_a, sock_b]
+    try:
+        while True:
+            readable, _, exceptional = select.select(socks, [], socks, 60)
+            if exceptional or not readable:
+                return
+            for sock in readable:
+                data = sock.recv(65536)
+                if not data:
+                    return
+                (sock_b if sock is sock_a else sock_a).sendall(data)
+    except OSError:
+        pass
+
+
+def _proxy_handle(client):
+    """Serve one proxied request: CONNECT tunnels, absolute-URI requests forward."""
+    upstream = None
+    try:
+        client.settimeout(30)
+        req = b""
+        while b"\r\n\r\n" not in req:
+            chunk = client.recv(65536)
+            if not chunk:
+                return
+            req += chunk
+        head, _, body = req.partition(b"\r\n\r\n")
+        method, target, _ = head.split(b"\r\n")[0].decode("latin1").split(" ", 2)
+        if method == "CONNECT":
+            host, _, port = target.rpartition(":")
+            upstream = socket.create_connection((host, int(port)), 20)
+            client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            if body:  # bytes pipelined after the CONNECT header (e.g. an eager TLS hello)
+                upstream.sendall(body)
+        else:
+            url = urlsplit(target)
+            upstream = socket.create_connection((url.hostname, url.port or 80), 20)
+            path = (url.path or "/") + ("?" + url.query if url.query else "")
+            lines = head.split(b"\r\n")
+            lines[0] = "{} {} HTTP/1.1".format(method, path).encode()
+            # Only this first request line is rewritten; later keep-alive requests
+            # would be shoveled raw (absolute-form, possibly for another host), so
+            # force one-request-per-connection — the client just reconnects.
+            lines = [line for line in lines
+                     if not line.lower().startswith((b"proxy-connection:", b"connection:"))]
+            lines.append(b"Connection: close")
+            upstream.sendall(b"\r\n".join(lines) + b"\r\n\r\n" + body)
+        client.settimeout(None)
+        _proxy_pipe(client, upstream)
+    except OSError:
+        pass
+    finally:
+        for sock in (client, upstream):
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+
+def start_proxy():
+    """Start the proxy on an ephemeral localhost port; returns (server_socket, port)."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(50)
+    port = server.getsockname()[1]
+
+    def _serve():
+        while True:
+            try:
+                client, _ = server.accept()
+            except OSError:
+                return  # server socket closed — shutdown
+            threading.Thread(target=_proxy_handle, args=(client,), daemon=True).start()
+
+    threading.Thread(target=_serve, daemon=True).start()
+    return server, port
+
+
+def apt_proxy_conf(port):
+    """apt.conf.d contents pointing apt at the tunnelled proxy."""
+    return ('Acquire::http::Proxy "http://127.0.0.1:{0}";\n'
+            'Acquire::https::Proxy "http://127.0.0.1:{0}";\n').format(port)
+
+
+class UsbInternet:
+    """Context manager: proxy + reverse ssh tunnel + apt proxy config on the Jetson."""
+
+    def __init__(self, target, password):
+        self.target = target
+        self.password = password
+        self.server = None
+        self.tunnel = None
+
+    def __enter__(self):
+        # Any failure below must tear down what already started: __exit__ never
+        # runs when __enter__ raises, and an orphaned `ssh -N -R` would outlive
+        # the tool and block the port on the Jetson for every later run.
+        try:
+            self.server, port = start_proxy()
+            self.tunnel = subprocess.Popen(  # pylint: disable=consider-using-with
+                ["sshpass", "-e", "ssh", "-N", "-o", "ExitOnForwardFailure=yes"] + SSH_OPTS
+                + ["-R", "{0}:127.0.0.1:{0}".format(port), self.target],
+                env=dict(os.environ, SSHPASS=self.password))
+            time.sleep(2)
+            if self.tunnel.poll() is not None:
+                raise RuntimeError("reverse ssh tunnel failed to start")
+            res = remote_run(self.target, self.password,
+                             "tee {} >/dev/null".format(APT_PROXY_CONF),
+                             sudo=True, input_text=apt_proxy_conf(port))
+            if res.returncode != 0:
+                raise RuntimeError("could not write {} on the Jetson".format(APT_PROXY_CONF))
+        except BaseException:
+            self._teardown(remove_conf=False)
+            raise
+        good("USB internet bridge up (host proxy on 127.0.0.1:{})".format(port))
+        return self
+
+    def _teardown(self, remove_conf):
+        """Best-effort cleanup of the apt conf, the tunnel, and the proxy socket."""
+        if remove_conf:
+            remote_run(self.target, self.password, "rm -f {}".format(APT_PROXY_CONF), sudo=True)
+        if self.tunnel and self.tunnel.poll() is None:
+            self.tunnel.terminate()
+        if self.server:
+            self.server.close()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._teardown(remove_conf=True)
+        return False
+
+
+def fix_clock(target, password):
+    """Set the Jetson's clock from this machine's UTC (fresh flashes boot in the past)."""
+    now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+    res = remote_run(target, password, "date -u -s '{}'".format(now), sudo=True)
+    if res.returncode == 0:
+        good("Jetson clock set to {} UTC".format(now))
+    else:
+        warn("could not set the Jetson clock — apt may reject Release files")
+
+
+def apt_install_jetpack(target, password):
+    """apt update + install nvidia-jetpack on the Jetson, streaming output."""
+    print("  apt-get update ...")
+    res = remote_run(target, password, "apt-get update", sudo=True)
+    if res.returncode != 0:
+        bad("apt-get update failed:\n{}".format((res.stdout or "").strip()[-2000:]))
+        return False
+    print("  apt-get install -y nvidia-jetpack  (several GB — this is the long part)...")
+    res = remote_run(target, password,
+                     "DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-jetpack",
+                     sudo=True, capture=False)
+    if res.returncode != 0:
+        bad("nvidia-jetpack install failed (rc {})".format(res.returncode))
+        return False
+    good("nvidia-jetpack installed")
+    return True
+
+
+def sanity_checks(target, password):
+    """Post-install checks: L4T release, jetpack version, eMMC error baseline."""
+    hdr("== Sanity checks ==")
+    all_good = True
+
+    res = remote_run(target, password, "cat /etc/nv_tegra_release")
+    release = (res.stdout or "").strip()
+    if "R35" in release and "REVISION: 4.1" in release:
+        good("L4T release: R35.4.1 (JetPack 5.1.2)")
+    else:
+        bad("unexpected L4T release: {}".format(release or "<unreadable>"))
+        all_good = False
+
+    res = remote_run(target, password, "dpkg-query -W -f '${Version}' nvidia-jetpack")
+    version = (res.stdout or "").strip()
+    if version == "5.1.2-b104":
+        good("nvidia-jetpack 5.1.2-b104")
+    else:
+        bad("nvidia-jetpack version is '{}' (expected 5.1.2-b104)".format(version or "<absent>"))
+        all_good = False
+
+    res = remote_run(target, password, "dmesg | grep -i mmc0", sudo=True)
+    mmc_lines = [line for line in (res.stdout or "").splitlines() if "password" not in line.lower()]
+    mmc_bad = [line for line in mmc_lines
+               if any(token in line.lower() for token in ("error", "timeout", "failed"))]
+    if mmc_bad:
+        warn("eMMC (mmc0) reports errors — the DG4064 CQE quirk; watch this under QA load:")
+        for line in mmc_bad[-5:]:
+            print("         {}".format(line.strip()))
+    elif mmc_lines:
+        good("eMMC (mmc0) baseline clean ({} dmesg lines, no errors)".format(len(mmc_lines)))
+    else:
+        warn("could not read mmc0 dmesg baseline")
+    return all_good
+
+
+def post_flash(target, password):
+    """Boot-wait, clock fix, apt (bridged over USB when offline), sanity checks."""
+    hdr("== Post-flash setup ==")
+    host = target.split("@", 1)[1]
+    if not wait_for("board to boot (USB device mode)",
+                    lambda: current_usb_pid() == USB_PID_BOOTED, BOOT_TIMEOUT_S):
+        bad("board did not reach booted USB device mode — check it manually")
+        return False
+    if not wait_for("ssh on {}".format(host), lambda: port_open(host, 22), SSH_TIMEOUT_S):
+        bad("ssh never came up on {}".format(host))
+        return False
+    res = remote_run(target, password, "echo SSH_OK")
+    if "SSH_OK" not in (res.stdout or ""):
+        bad("ssh login as {} failed — wrong username/password?".format(target))
+        return False
+    good("ssh login works")
+    fix_clock(target, password)
+
+    if jetson_has_internet(target, password):
+        good("Jetson has its own internet access")
+        return apt_install_jetpack(target, password)
+    warn("Jetson has no internet — bridging over the USB link (plug in Ethernet for a permanent fix)")
+    try:
+        with UsbInternet(target, password):
+            return apt_install_jetpack(target, password)
+    except RuntimeError as exc:
+        bad(str(exc))
+        return False
+
+
+# ---------------------------------------------------------------- manifest maintenance
+
+
+def make_manifest(l4t, output):
+    """Regenerate the canonical manifest from a healthy patched tree (maintainers only)."""
+    if xml_patch_state(l4t) != "patched":
+        bad("refusing to snapshot an unpatched/unhealthy tree — run 'verify' first")
+        return False
+    manifest = build_manifest(l4t)
+    if not manifest:
+        bad("no manifest files found under {} — wrong --l4t?".format(l4t))
+        return False
+    with open(output, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=1, sort_keys=True)
+        handle.write("\n")
+    good("manifest written: {} ({} files)".format(output, len(manifest)))
+    print("  commit this as {} — every machine verifies against it".format(MANIFEST_REL))
+    return True
+
+
+# ---------------------------------------------------------------- CLI
+
+
+def build_parser():
+    """argparse tree for the four subcommands (flash is the default)."""
+    shared = argparse.ArgumentParser(add_help=False)
+    shared.add_argument("--l4t", default=DEFAULT_L4T, help="Linux_for_Tegra tree (default: %(default)s)")
+    shared.add_argument("--manifest", default=None,
+                        help="canonical manifest path (default: the repo's {})".format(MANIFEST_REL))
+
+    parser = argparse.ArgumentParser(
+        prog="er_jetson_flash", parents=[shared],
+        description="Check, restore, flash and provision an AGX Orin QA cortex (JetPack 5.1.2).")
+    sub = parser.add_subparsers(dest="command")
+
+    flash = sub.add_parser("flash", parents=[shared],
+                           help="full pipeline: verify/restore, preflight, flash, post-flash (default)")
+    flash.add_argument("--username", default=DEF_USER, help="Jetson user to create (default: %(default)s)")
+    flash.add_argument("--password", default=None,
+                       help="password for that user (default: $ER_JETSON_PASSWORD, else '{}'). "
+                            "Prefer the env var for non-defaults — argv is visible in ps".format(DEF_PASS))
+    flash.add_argument("--storage", default="nvme0n1p1", help="rootfs device (default: %(default)s)")
+    flash.add_argument("--yes", action="store_true", help="assume yes on restore prompts (login stays interactive)")
+    flash.add_argument("--skip-post", action="store_true", help="stop after the flash itself")
+
+    sub.add_parser("verify", parents=[shared],
+                   help="check tree presence, patch and manifest; changes nothing")
+
+    restore = sub.add_parser("restore", parents=[shared],
+                             help="verify and repair/reinstall the flash tree now, don't flash")
+    restore.add_argument("--yes", action="store_true", help="assume yes on prompts")
+
+    make = sub.add_parser("make-manifest", parents=[shared],
+                          help="regenerate the canonical manifest from the local patched tree")
+    make.add_argument("--output", default="er_jetson_flash_manifest.json",
+                      help="where to write it (default: %(default)s in the current directory)")
+    return parser
+
+
+def check_host_tools(skip_post):
+    """Fail fast on missing host tools instead of after a 20-minute flash."""
+    needed = ["curl", "lsusb"] + ([] if skip_post else ["sshpass"])
+    missing = [tool for tool in needed if not shutil.which(tool)]
+    if missing:
+        bad("missing host tools: {} — install them first (sshpass/curl via apt, lsusb is usbutils)".format(
+            ", ".join(missing)))
+        return False
+    return True
+
+
+def cmd_flash(args):
+    """Full pipeline."""
+    if not check_host_tools(args.skip_post):
+        return EXIT_FAILURE
+    if not ensure_tree(args.l4t, load_canonical_manifest(args.manifest), args.yes):
+        return EXIT_FAILURE
+    preflight_rc = run_preflight(args.l4t)
+    if preflight_rc != 0:
+        bad("preflight did not report GO (rc {}) — fix that first; NOT flashing".format(preflight_rc))
+        return preflight_rc
+    if current_usb_pid() != USB_PID_RECOVERY:
+        bad("board is not in forced recovery — put it there and re-run (see preflight banner)")
+        return EXIT_UNDETERMINED
+    password = args.password or os.environ.get("ER_JETSON_PASSWORD") or DEF_PASS
+    if not run_flash(args.l4t, args.username, password, args.storage):
+        return EXIT_FAILURE
+    if args.skip_post:
+        good("flash done; post-flash setup skipped (--skip-post)")
+        return EXIT_OK
+    target = "{}@{}".format(args.username, DEF_HOST)
+    if not post_flash(target, password):
+        return EXIT_FAILURE
+    if not sanity_checks(target, password):
+        return EXIT_FAILURE
+    hdr("== DONE — board flashed, provisioned and sane ==")
+    return EXIT_OK
+
+
+def cmd_verify(args):
+    """Verify-only entry point."""
+    healthy = verify_tree(args.l4t, load_canonical_manifest(args.manifest))
+    if healthy and xml_patch_state(args.l4t) == "stock":
+        warn("run 'er_jetson_flash restore' or apply the patch before flashing a post-PCN module")
+        return EXIT_UNDETERMINED
+    return EXIT_OK if healthy else EXIT_FAILURE
+
+
+# Options that consume the next argv token — needed to tell a subcommand token
+# apart from an option VALUE that happens to collide with one (e.g. --l4t flash).
+VALUE_OPTS = frozenset(("--l4t", "--manifest", "--username", "--password", "--storage", "--output"))
+
+
+def default_subcommand(argv):
+    """Prepend 'flash' when argv carries no subcommand (option values don't count)."""
+    expecting_value = False
+    for token in argv:
+        if expecting_value:
+            expecting_value = False
+            continue
+        if token.startswith("-"):
+            expecting_value = token in VALUE_OPTS  # --opt=value consumes nothing
+            continue
+        return argv  # first bare token is the subcommand; argparse validates it
+    return ["flash"] + argv
+
+
+def main(argv=None):
+    """Entry point. Returns the process exit code."""
+    argv = default_subcommand(list(sys.argv[1:] if argv is None else argv))
+    args = build_parser().parse_args(argv)
+    try:
+        if args.command == "verify":
+            return cmd_verify(args)
+        if args.command == "restore":
+            if ensure_tree(args.l4t, load_canonical_manifest(args.manifest), args.yes):
+                good("tree is healthy and patched")
+                return EXIT_OK
+            return EXIT_FAILURE
+        if args.command == "make-manifest":
+            return EXIT_OK if make_manifest(args.l4t, args.output) else EXIT_FAILURE
+        return cmd_flash(args)
+    except KeyboardInterrupt:
+        print()
+        bad("interrupted")
+        return EXIT_UNDETERMINED
+
+
+if __name__ == "__main__":
+    sys.exit(main())

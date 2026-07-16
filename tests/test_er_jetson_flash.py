@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+# SKIP_CHECK — this is a PYTHON file. check_bash.yml greps for the bash-shebang
+# literal, which the make_tree fixture below writes into its fake flash.sh; the
+# marker stops CI from trying to source this file as bash.
+"""Self-contained tests for bin/er_jetson_flash.py — no hardware, no network, no sudo.
+
+Everything that talks to the outside world (lsusb, ssh, sdkmanager, tar, the
+Jetson itself) is either mocked or exercised against tmpdir fixtures. Run with:
+    python3 -m unittest tests.test_er_jetson_flash        (from the repo root)
+    python3 tests/test_er_jetson_flash.py
+"""
+
+import io
+import json
+import os
+import shutil
+import socket
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "bin"))
+import er_jetson_flash as ejf  # noqa: E402  (path bootstrap must run first)
+
+FAKE_XML_STOCK = '<device type="sdmmc_user">\n <num_sectors> {} </num_sectors>\n'.format(
+    ejf.STOCK_VAL)
+
+
+def manifest_fixture(l4t):
+    """Write a matching canonical-manifest fixture; returns its path."""
+    path = os.path.join(os.path.dirname(os.path.dirname(l4t)), "manifest.json")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(ejf.build_manifest(l4t), handle)
+    return path
+
+
+def make_tree(root, xml_content=FAKE_XML_STOCK):
+    """Create a minimal Linux_for_Tegra fixture under root; returns the l4t path."""
+    l4t = os.path.join(root, "JetPack_5.1.2_Linux_JETSON_AGX_ORIN_TARGETS", "Linux_for_Tegra")
+    xml_dir = os.path.join(l4t, "bootloader", "t186ref", "cfg")
+    os.makedirs(xml_dir)
+    with open(os.path.join(xml_dir, "flash_t234_qspi_sdmmc.xml"), "w", encoding="utf-8") as handle:
+        handle.write(xml_content)
+    with open(os.path.join(l4t, "jetson-agx-orin-devkit.conf"), "w", encoding="utf-8") as handle:
+        handle.write("EMMC_CFG=flash_t234_qspi_sdmmc.xml\n")
+    with open(os.path.join(l4t, "flash.sh"), "w", encoding="utf-8") as handle:
+        handle.write("#!/bin/bash\n")
+    return l4t
+
+
+class ClassifyPatchTest(unittest.TestCase):
+    """classify_patch / xml_patch_state cover all four content states + missing."""
+
+    def test_stock(self):
+        self.assertEqual(ejf.classify_patch("a {} b".format(ejf.STOCK_VAL)), "stock")
+
+    def test_patched(self):
+        self.assertEqual(ejf.classify_patch("a {} b".format(ejf.PATCH_VAL)), "patched")
+
+    def test_half_edited(self):
+        both = ejf.STOCK_VAL + ejf.PATCH_VAL
+        self.assertEqual(ejf.classify_patch(both), "half")
+
+    def test_weird(self):
+        self.assertEqual(ejf.classify_patch('num_sectors="42"'), "weird")
+
+    def test_missing_tree(self):
+        self.assertEqual(ejf.xml_patch_state("/nonexistent/l4t"), "missing")
+
+
+class ApplyPatchTest(unittest.TestCase):
+    """apply_patch patches once, keeps a pristine .orig, and refuses odd states."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root)
+        self.l4t = make_tree(self.root)
+        self.xml = os.path.join(self.l4t, ejf.XML_REL)
+
+    def test_patches_and_keeps_orig(self):
+        self.assertTrue(ejf.apply_patch(self.l4t))
+        self.assertEqual(ejf.xml_patch_state(self.l4t), "patched")
+        with open(self.xml + ".orig", encoding="utf-8") as handle:
+            self.assertIn(ejf.STOCK_VAL, handle.read())
+
+    def test_idempotent(self):
+        self.assertTrue(ejf.apply_patch(self.l4t))
+        with open(self.xml, encoding="utf-8") as handle:
+            first = handle.read()
+        self.assertTrue(ejf.apply_patch(self.l4t))
+        with open(self.xml, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), first)
+
+    def test_never_clobbers_existing_orig(self):
+        with open(self.xml + ".orig", "w", encoding="utf-8") as handle:
+            handle.write("pristine sentinel")
+        self.assertTrue(ejf.apply_patch(self.l4t))
+        with open(self.xml + ".orig", encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "pristine sentinel")
+
+    def test_refuses_half_edited(self):
+        with open(self.xml, "w", encoding="utf-8") as handle:
+            handle.write(ejf.STOCK_VAL + "\n" + ejf.PATCH_VAL)
+        self.assertFalse(ejf.apply_patch(self.l4t))
+
+
+class ManifestTest(unittest.TestCase):
+    """build_manifest picks the load-bearing files; compare_manifest spots drift."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root)
+        self.l4t = make_tree(self.root)
+
+    def test_roundtrip_clean(self):
+        manifest = ejf.build_manifest(self.l4t)
+        self.assertIn("jetson-agx-orin-devkit.conf", manifest)
+        self.assertIn(ejf.XML_REL, manifest)
+        self.assertEqual(ejf.compare_manifest(self.l4t, manifest), [])
+
+    def test_detects_modified_file(self):
+        manifest = ejf.build_manifest(self.l4t)
+        with open(os.path.join(self.l4t, "flash.sh"), "a", encoding="utf-8") as handle:
+            handle.write("echo tampered\n")
+        problems = ejf.compare_manifest(self.l4t, manifest)
+        self.assertEqual(problems, ["flash.sh: content differs"])
+
+    def test_detects_missing_file(self):
+        manifest = ejf.build_manifest(self.l4t)
+        os.unlink(os.path.join(self.l4t, "flash.sh"))
+        self.assertEqual(ejf.compare_manifest(self.l4t, manifest), ["flash.sh: missing"])
+
+
+class CanonicalManifestTest(unittest.TestCase):
+    """load_canonical_manifest: override path wins; sibling repo file is found."""
+
+    def test_override_path(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        path = os.path.join(root, "m.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"a": "1"}, handle)
+        self.assertEqual(ejf.load_canonical_manifest(path), {"a": "1"})
+
+    def test_sibling_repo_file_is_used(self):
+        # The repo checkout ships the canonical manifest next to the script.
+        sibling = os.path.join(os.path.dirname(os.path.abspath(ejf.__file__)),
+                               os.path.basename(ejf.MANIFEST_REL))
+        self.assertTrue(os.path.isfile(sibling),
+                        "canonical manifest missing from the repo: {}".format(ejf.MANIFEST_REL))
+        manifest = ejf.load_canonical_manifest()
+        self.assertIsInstance(manifest, dict)
+        self.assertIn(ejf.XML_REL, manifest)
+
+
+class ParseUsbPidTest(unittest.TestCase):
+    """parse_usb_pid pulls the NVIDIA product id out of lsusb output."""
+
+    def test_recovery(self):
+        text = "Bus 003 Device 021: ID 0955:7023 NVIDIA Corp. APX\n"
+        self.assertEqual(ejf.parse_usb_pid(text), "7023")
+
+    def test_booted_amongst_other_devices(self):
+        text = ("Bus 001 Device 002: ID 8087:0026 Intel Corp.\n"
+                "Bus 003 Device 023: ID 0955:7020 NVIDIA Corp. L4T\n")
+        self.assertEqual(ejf.parse_usb_pid(text), "7020")
+
+    def test_no_nvidia(self):
+        self.assertIsNone(ejf.parse_usb_pid("Bus 001 Device 002: ID 8087:0026 Intel Corp.\n"))
+
+
+class AptProxyConfTest(unittest.TestCase):
+    """apt proxy config carries the tunnelled port for both http and https."""
+
+    def test_both_schemes_use_port(self):
+        conf = ejf.apt_proxy_conf(12345)
+        self.assertIn('Acquire::http::Proxy "http://127.0.0.1:12345";', conf)
+        self.assertIn('Acquire::https::Proxy "http://127.0.0.1:12345";', conf)
+
+
+class ProxySmokeTest(unittest.TestCase):
+    """start_proxy binds an ephemeral localhost port and accepts connections."""
+
+    def test_listens_and_accepts(self):
+        server, port = ejf.start_proxy()
+        try:
+            self.assertGreater(port, 0)
+            with socket.create_connection(("127.0.0.1", port), timeout=5):
+                pass
+        finally:
+            server.close()
+
+
+class EnsureTreeTest(unittest.TestCase):
+    """ensure_tree end-to-end against fixtures: patch-in-place and restore paths."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root)
+
+    def test_stock_tree_gets_patched_in_place(self):
+        l4t = make_tree(self.root)
+        self.assertTrue(ejf.ensure_tree(l4t, None, assume_yes=False))
+        self.assertEqual(ejf.xml_patch_state(l4t), "patched")
+
+    def test_missing_tree_reinstall_declined(self):
+        l4t = os.path.join(self.root, "JetPack_5.1.2_Linux_JETSON_AGX_ORIN_TARGETS", "Linux_for_Tegra")
+        with mock.patch.object(sys, "stdin", io.StringIO("")):  # EOF -> decline
+            self.assertFalse(ejf.ensure_tree(l4t, None, assume_yes=False))
+
+    def test_missing_tree_guided_sdkmanager_invoked_with_yes(self):
+        l4t = os.path.join(self.root, "JetPack_5.1.2_Linux_JETSON_AGX_ORIN_TARGETS", "Linux_for_Tegra")
+        with mock.patch.object(ejf, "guided_sdkmanager", return_value=False) as guided:
+            self.assertFalse(ejf.ensure_tree(l4t, None, assume_yes=True))
+        guided.assert_called_once()
+
+    def test_drifted_tree_moved_aside_and_reinstalled(self):
+        l4t = make_tree(self.root)
+        ejf.apply_patch(l4t)
+        manifest = ejf.build_manifest(l4t)
+        # tamper with a manifest-tracked file -> verify fails -> restore path runs
+        with open(os.path.join(l4t, "flash.sh"), "a", encoding="utf-8") as handle:
+            handle.write("echo tampered\n")
+
+        def fake_sdkmanager():
+            # the bad tree must already be out of the way, like a real reinstall sees
+            self.assertFalse(os.path.isdir(l4t))
+            make_tree(self.root)  # pristine stock tree, as a real extract would give
+            return True
+
+        with mock.patch.object(ejf, "guided_sdkmanager", side_effect=fake_sdkmanager):
+            self.assertTrue(ejf.ensure_tree(l4t, manifest, assume_yes=True))
+        self.assertEqual(ejf.xml_patch_state(l4t), "patched")
+        aside = [name for name in os.listdir(self.root) if ".broken." in name]
+        self.assertEqual(len(aside), 1)
+
+
+class CliTest(unittest.TestCase):
+    """Argument handling: defaults, default subcommand insertion, verify exit codes."""
+
+    def test_flash_defaults(self):
+        args = ejf.build_parser().parse_args(["flash"])
+        self.assertEqual(args.username, "extend")
+        # password defaults to None on argv — resolved later from
+        # $ER_JETSON_PASSWORD (preferred: argv is visible in ps) or DEF_PASS
+        self.assertIsNone(args.password)
+        self.assertEqual(ejf.DEF_PASS, "extend")
+        self.assertEqual(args.storage, "nvme0n1p1")
+
+    def test_default_subcommand_is_flash(self):
+        with mock.patch.object(ejf, "cmd_flash", return_value=0) as cmd:
+            self.assertEqual(ejf.main(["--username", "bob"]), 0)
+        self.assertEqual(cmd.call_args[0][0].username, "bob")
+
+    def test_option_value_colliding_with_subcommand_name(self):
+        # regression: an option VALUE equal to a subcommand name must not
+        # suppress the default-subcommand insertion (--l4t flash used to crash)
+        with mock.patch.object(ejf, "cmd_flash", return_value=0) as cmd:
+            self.assertEqual(ejf.main(["--l4t", "flash"]), 0)
+        args = cmd.call_args[0][0]
+        self.assertEqual(args.command, "flash")
+        self.assertEqual(args.l4t, "flash")
+
+    def test_explicit_subcommand_not_shadowed(self):
+        self.assertEqual(ejf.default_subcommand(["verify", "--l4t", "x"]),
+                         ["verify", "--l4t", "x"])
+        self.assertEqual(ejf.default_subcommand(["--l4t", "x", "verify"]),
+                         ["--l4t", "x", "verify"])
+        self.assertEqual(ejf.default_subcommand(["--yes"]), ["flash", "--yes"])
+
+    def test_verify_missing_tree_fails(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        empty = os.path.join(root, "empty.json")
+        with open(empty, "w", encoding="utf-8") as handle:
+            json.dump({}, handle)
+        result = ejf.main(["verify", "--l4t", os.path.join(root, "nope"), "--manifest", empty])
+        self.assertEqual(result, ejf.EXIT_FAILURE)
+
+    def test_verify_patched_tree_passes(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        l4t = make_tree(root)
+        ejf.apply_patch(l4t)
+        result = ejf.main(["verify", "--l4t", l4t, "--manifest", manifest_fixture(l4t)])
+        self.assertEqual(result, ejf.EXIT_OK)
+
+    def test_verify_stock_tree_is_undetermined(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        l4t = make_tree(root)
+        result = ejf.main(["verify", "--l4t", l4t, "--manifest", manifest_fixture(l4t)])
+        self.assertEqual(result, ejf.EXIT_UNDETERMINED)
+
+    def test_verify_stock_tree_with_patched_manifest_is_undetermined(self):
+        # regression: the canonical manifest hashes the PATCHED tree, so a stock
+        # tree used to be misreported as manifest drift (exit 1) instead of the
+        # designed "stock, fixable in-place" exit 2
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        l4t = make_tree(root)
+        ejf.apply_patch(l4t)
+        manifest = manifest_fixture(l4t)  # manifest of the PATCHED tree
+        with open(os.path.join(l4t, ejf.XML_REL), "w", encoding="utf-8") as handle:
+            handle.write(FAKE_XML_STOCK)  # tree back to stock, like a fresh extract
+        result = ejf.main(["verify", "--l4t", l4t, "--manifest", manifest])
+        self.assertEqual(result, ejf.EXIT_UNDETERMINED)
+
+    def test_verify_drifted_tree_fails(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        l4t = make_tree(root)
+        ejf.apply_patch(l4t)
+        manifest = manifest_fixture(l4t)
+        with open(os.path.join(l4t, "flash.sh"), "a", encoding="utf-8") as handle:
+            handle.write("echo drift\n")
+        result = ejf.main(["verify", "--l4t", l4t, "--manifest", manifest])
+        self.assertEqual(result, ejf.EXIT_FAILURE)
+
+
+class MakeManifestTest(unittest.TestCase):
+    """make-manifest refuses unpatched trees and writes a loadable manifest."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root)
+        self.output = os.path.join(self.root, "out.json")
+
+    def test_refuses_unpatched_tree(self):
+        l4t = make_tree(self.root)
+        self.assertFalse(ejf.make_manifest(l4t, self.output))
+
+    def test_writes_loadable_manifest(self):
+        l4t = make_tree(self.root)
+        ejf.apply_patch(l4t)
+        self.assertTrue(ejf.make_manifest(l4t, self.output))
+        manifest = ejf.load_canonical_manifest(self.output)
+        self.assertIn(ejf.XML_REL, manifest)
+        self.assertEqual(ejf.compare_manifest(l4t, manifest), [])
+
+    def test_refuses_empty_tree_location(self):
+        l4t = make_tree(self.root)
+        ejf.apply_patch(l4t)
+        with mock.patch.object(ejf, "MANIFEST_GLOBS", ("*.nomatch",)):
+            self.assertFalse(ejf.make_manifest(l4t, self.output))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
