@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SKIP_CHECK — this is a PYTHON file. check_bash.yml greps for the bash-shebang
+# literal, which the make_tree fixture below writes into its fake flash.sh; the
+# marker stops CI from trying to source this file as bash.
 """Self-contained tests for bin/er_jetson_flash.py — no hardware, no network, no sudo.
 
 Everything that talks to the outside world (lsusb, ssh, sdkmanager, tar, the
