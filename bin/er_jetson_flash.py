@@ -80,6 +80,11 @@ SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/nul
 BOOT_TIMEOUT_S = 300
 SSH_TIMEOUT_S = 240
 APT_PROXY_CONF = "/etc/apt/apt.conf.d/99er-usb-proxy"
+# fix_clock() jumps the fresh flash's clock forward by years, which makes
+# systemd's Persistent=true apt-daily timers fire their "missed" runs at once —
+# their apt-get then holds the apt locks exactly when we need them. We stop the
+# timers for this boot and let our own apt-get wait out any run already started.
+APT_LOCK_WAIT_S = 600
 
 USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 RED = "\033[0;31m" if USE_COLOR else ""
@@ -609,14 +614,19 @@ def fix_clock(target, password):
 
 def apt_install_jetpack(target, password):
     """apt update + install nvidia-jetpack on the Jetson, streaming output."""
+    res = remote_run(target, password,
+                     "systemctl stop apt-daily.timer apt-daily-upgrade.timer", sudo=True)
+    if res.returncode != 0:
+        warn("could not stop apt-daily timers — relying on the apt lock wait")
+    apt_get = "apt-get -o DPkg::Lock::Timeout={}".format(APT_LOCK_WAIT_S)
     print("  apt-get update ...")
-    res = remote_run(target, password, "apt-get update", sudo=True)
+    res = remote_run(target, password, apt_get + " update", sudo=True)
     if res.returncode != 0:
         bad("apt-get update failed:\n{}".format((res.stdout or "").strip()[-2000:]))
         return False
     print("  apt-get install -y nvidia-jetpack  (several GB — this is the long part)...")
     res = remote_run(target, password,
-                     "DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-jetpack",
+                     "DEBIAN_FRONTEND=noninteractive " + apt_get + " install -y nvidia-jetpack",
                      sudo=True, capture=False)
     if res.returncode != 0:
         bad("nvidia-jetpack install failed (rc {})".format(res.returncode))
