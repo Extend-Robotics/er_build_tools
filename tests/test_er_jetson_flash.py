@@ -179,6 +179,40 @@ class AptProxyConfTest(unittest.TestCase):
         self.assertIn('Acquire::https::Proxy "http://127.0.0.1:12345";', conf)
 
 
+class AptInstallJetpackTest(unittest.TestCase):
+    """fix_clock's jump fires the Persistent apt-daily timers, whose apt-get
+    steals the apt locks (seen in the field: 'Could not get lock
+    /var/lib/apt/lists/lock'). apt_install_jetpack must stop the timers first
+    and make every apt-get wait on the locks instead of failing."""
+
+    def test_stops_timers_then_apt_waits_on_locks(self):
+        commands = []
+
+        def fake_remote_run(_target, _password, command, **_kwargs):
+            commands.append(command)
+            return mock.Mock(returncode=0, stdout="")
+
+        with mock.patch.object(ejf, "remote_run", side_effect=fake_remote_run):
+            self.assertTrue(ejf.apt_install_jetpack("192.0.2.1", "pw"))
+
+        self.assertIn("systemctl stop apt-daily.timer apt-daily-upgrade.timer",
+                      commands[0])
+        apt_cmds = [c for c in commands if "apt-get" in c]
+        self.assertEqual(len(apt_cmds), 2)
+        for cmd in apt_cmds:
+            self.assertIn("-o DPkg::Lock::Timeout={}".format(ejf.APT_LOCK_WAIT_S), cmd)
+        self.assertTrue(apt_cmds[0].endswith(" update"))
+        self.assertIn("install -y nvidia-jetpack", apt_cmds[1])
+
+    def test_timer_stop_failure_does_not_abort(self):
+        def fake_remote_run(_target, _password, command, **_kwargs):
+            returncode = 1 if "systemctl" in command else 0
+            return mock.Mock(returncode=returncode, stdout="")
+
+        with mock.patch.object(ejf, "remote_run", side_effect=fake_remote_run):
+            self.assertTrue(ejf.apt_install_jetpack("192.0.2.1", "pw"))
+
+
 class ProxySmokeTest(unittest.TestCase):
     """start_proxy binds an ephemeral localhost port and accepts connections."""
 

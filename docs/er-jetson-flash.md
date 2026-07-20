@@ -41,6 +41,12 @@ just takes longer the first time, while the tool walks a guided reinstall.
 5. **Post-flash setup**:
    - waits for the board to boot (USB `0955:7020`) and for ssh
    - fixes the fresh-flash clock skew (apt rejects "future" Release files otherwise)
+   - quiets the apt-daily/unattended-upgrades race: the clock jump makes systemd's
+     persistent apt-daily timers fire "missed" runs immediately, and their apt-get
+     grabs the apt locks (`Could not get lock /var/lib/apt/lists/lock`). The tool
+     stops both timers for this boot only (the shipped image stays stock) and runs
+     its own apt-get with `-o DPkg::Lock::Timeout=600` to wait out any run that
+     already started
    - checks whether the board has internet; when it is USB-only, the tool starts an
      embedded HTTP proxy on the host, reverse-tunnels it over ssh, and points the
      board's apt at it for the duration (config removed afterwards)
