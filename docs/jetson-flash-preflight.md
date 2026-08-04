@@ -89,3 +89,4 @@ Automation can gate on the exit code (`L4T` exported in your shell, same
 default as the script's):
 
     er_jetson_flash_preflight && cd "$L4T" && sudo ./flash.sh jetson-agx-orin-devkit external
+    # swap 'external' for 'internal' to put the rootfs on the eMMC (boards with no NVMe fitted)

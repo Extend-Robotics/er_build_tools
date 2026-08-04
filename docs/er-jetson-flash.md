@@ -7,6 +7,7 @@ sanity-checked QA cortex:
 ```
 er_jetson_flash                      # everything, with extend/extend defaults
 er_jetson_flash --username qa --password s3cret
+er_jetson_flash --storage internal   # board has no NVMe — put the rootfs on the eMMC
 er_jetson_flash verify               # read-only health check of the flash tree
 er_jetson_flash restore              # fix/restore the flash tree, don't flash
 er_jetson_flash make-manifest        # regenerate the canonical manifest (maintainers)
@@ -35,9 +36,14 @@ just takes longer the first time, while the tool walks a guided reinstall.
    Downloads reuse `~/Downloads/nvidia/sdkm_downloads` when present.
 3. **Preflight gate**: runs [`er_jetson_flash_preflight`](jetson-flash-preflight.md);
    anything but GO stops the pipeline.
-4. **Flash**: `sudo ./nvsdkmanager_flash.sh --storage nvme0n1p1 --nv-auto-config
-   --username <user>` — rootfs on NVMe, first-boot user preseeded (no monitor needed).
-   The password is fed to the preseeder over stdin, never argv.
+4. **Flash**: `sudo ./nvsdkmanager_flash.sh [--storage <dev>] --nv-auto-config
+   --username <user>` — first-boot user preseeded (no monitor needed); the password
+   is fed to the preseeder over stdin, never argv. `--storage` chooses where the
+   rootfs goes: the default `nvme0n1p1` puts it on the NVMe SSD (the eMMC then holds
+   only a boot partition pointing at it), while `--storage internal` omits the flag so
+   the rootfs lands on the on-board eMMC. Use `internal` for boards with **no NVMe
+   fitted** — otherwise the flash writes the eMMC boot GPT and then aborts at
+   `Could not stat device /dev/nvme0n1`.
 5. **Post-flash setup**:
    - waits for the board to boot (USB `0955:7020`) and for ssh
    - fixes the fresh-flash clock skew (apt rejects "future" Release files otherwise)
@@ -94,3 +100,6 @@ re-patch and a hand-held flash. This tool makes that whole loop one command.
   are fetched from when not running from a repo checkout (set automatically by
   the `er_jetson_flash` helper function)
 - `--l4t`, `--manifest` — non-default tree / manifest locations
+- `--storage` — rootfs location: `nvme` (default, = `nvme0n1p1`) for an NVMe SSD, or
+  `internal`/`emmc` for the on-board eMMC on boards with no NVMe fitted; also accepts a
+  raw device such as `sda1`. `internal` omits `--storage` from the underlying flash.
