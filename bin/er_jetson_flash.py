@@ -6,7 +6,8 @@ Pipeline (subcommand `flash`, the default):
                 (a guided `sdkmanager --cli` reinstall restores it when not — nothing
                 is tied to any particular machine; a fresh machine just takes longer)
   2. preflight— run bin/jetson-flash-preflight.sh: GO / DO NOT FLASH gate
-  3. flash    — sudo ./nvsdkmanager_flash.sh --storage ... --nv-auto-config --username ...
+  3. flash    — sudo ./nvsdkmanager_flash.sh [--storage <dev>] --nv-auto-config --username ...
+                (--storage picks the rootfs device; omitted => rootfs on the internal eMMC)
   4. post     — wait for boot, fix the clock, give the board internet via an
                 embedded HTTP proxy over the USB link when it has none,
                 apt install nvidia-jetpack (pinned 5.1.2-b104), sanity checks
@@ -379,15 +380,53 @@ def current_usb_pid():
     return parse_usb_pid(res.stdout) if res.returncode == 0 else None
 
 
+# nvsdkmanager_flash.sh puts the rootfs on the internal eMMC when given NO
+# --storage, and on an EXTERNAL device (the eMMC then keeps only a boot partition
+# pointing at it) when given one. So an eMMC-rootfs flash means passing no
+# --storage at all — 'internal'/'emmc' therefore resolve to None, not a device
+# name. Boards with no NVMe fitted must flash internal, or the run writes the
+# eMMC boot GPT and then aborts at "Could not stat device /dev/nvme0n1".
+STORAGE_INTERNAL = None
+STORAGE_ALIASES = {"nvme": "nvme0n1p1", "internal": STORAGE_INTERNAL, "emmc": STORAGE_INTERNAL}
+
+
+def resolve_storage(value):
+    """Map a --storage value onto what nvsdkmanager_flash.sh wants.
+
+    Returns a device string (external rootfs) or None (internal eMMC — no
+    --storage flag). Aliases: nvme -> nvme0n1p1, internal/emmc -> None. Any other
+    value (a raw device such as nvme0n1p1 or sda1) passes through unchanged.
+    """
+    key = value.strip().lower()
+    return STORAGE_ALIASES[key] if key in STORAGE_ALIASES else value
+
+
+def flash_command(username, storage):
+    """argv for the nvsdkmanager_flash.sh run. storage=None omits --storage so the
+    rootfs lands on the internal eMMC; a device name puts the rootfs there instead."""
+    cmd = ["sudo", "./nvsdkmanager_flash.sh"]
+    if storage is not None:
+        cmd += ["--storage", storage]
+    return cmd + ["--nv-auto-config", "--username", username]
+
+
 def run_flash(l4t, username, password, storage):
-    """Run nvsdkmanager_flash.sh under sudo, feeding the preseed password on stdin."""
+    """Run nvsdkmanager_flash.sh under sudo, feeding the preseed password on stdin.
+
+    storage is None for an internal-eMMC rootfs (no --storage) or a device name
+    (e.g. nvme0n1p1) for an external rootfs.
+    """
     hdr("== Flash ==")
+    on_nvme = storage is not None and storage.startswith("nvme")
+    print("  rootfs target: {}".format("internal eMMC" if storage is None else storage))
+    if on_nvme:
+        warn("rootfs goes on {} — the board MUST have that NVMe fitted; if it has none, "
+             "Ctrl-C now and re-run with --storage internal".format(storage))
     print("  validating sudo (the flash needs root)...")
     if subprocess.run(["sudo", "-v"], check=False).returncode != 0:
         bad("sudo credentials unavailable")
         return False
-    cmd = ["sudo", "./nvsdkmanager_flash.sh", "--storage", storage,
-           "--nv-auto-config", "--username", username]
+    cmd = flash_command(username, storage)
     print("  running: {}  (in {})".format(" ".join(cmd), l4t))
     print("  expect ~15-25 min; do NOT unplug the board, even on failure it is recoverable\n")
     # nv_preseed.sh reads the new user's password from stdin (`read -s`), so a
@@ -404,6 +443,9 @@ def run_flash(l4t, username, password, storage):
         returncode = proc.wait()
     if returncode != 0:
         bad("flash failed (rc {}) — see {}/initrdlog/ for details".format(returncode, l4t))
+        if on_nvme:
+            warn("no NVMe in this board? that aborts exactly here — re-run with "
+                 "--storage internal to put the rootfs on the eMMC")
         return False
     good("flash reported success")
     return True
@@ -742,7 +784,10 @@ def build_parser():
     flash.add_argument("--password", default=None,
                        help="password for that user (default: $ER_JETSON_PASSWORD, else '{}'). "
                             "Prefer the env var for non-defaults — argv is visible in ps".format(DEF_PASS))
-    flash.add_argument("--storage", default="nvme0n1p1", help="rootfs device (default: %(default)s)")
+    flash.add_argument("--storage", default="nvme0n1p1",
+                       help="rootfs location: 'nvme' (=nvme0n1p1, the default) for an NVMe SSD, "
+                            "'internal' (or 'emmc') for the on-board eMMC on boards with no NVMe, "
+                            "or a raw device such as sda1 (default: %(default)s)")
     flash.add_argument("--yes", action="store_true", help="assume yes on restore prompts (login stays interactive)")
     flash.add_argument("--skip-post", action="store_true", help="stop after the flash itself")
 
@@ -785,7 +830,7 @@ def cmd_flash(args):
         bad("board is not in forced recovery — put it there and re-run (see preflight banner)")
         return EXIT_UNDETERMINED
     password = args.password or os.environ.get("ER_JETSON_PASSWORD") or DEF_PASS
-    if not run_flash(args.l4t, args.username, password, args.storage):
+    if not run_flash(args.l4t, args.username, password, resolve_storage(args.storage)):
         return EXIT_FAILURE
     if args.skip_post:
         good("flash done; post-flash setup skipped (--skip-post)")

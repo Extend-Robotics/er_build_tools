@@ -380,5 +380,47 @@ class MakeManifestTest(unittest.TestCase):
             self.assertFalse(ejf.make_manifest(l4t, self.output))
 
 
+class StorageSelectionTest(unittest.TestCase):
+    """--storage aliases resolve correctly; flash_command omits --storage for eMMC."""
+
+    def test_nvme_alias_and_passthrough(self):
+        self.assertEqual(ejf.resolve_storage("nvme"), "nvme0n1p1")
+        self.assertEqual(ejf.resolve_storage("nvme0n1p1"), "nvme0n1p1")  # the default passes through
+        self.assertEqual(ejf.resolve_storage("sda1"), "sda1")            # unknown device passes through
+
+    def test_internal_aliases_mean_no_storage_flag(self):
+        # None is the signal to omit --storage, which is how nvsdkmanager_flash.sh
+        # is told to put the rootfs on the internal eMMC.
+        self.assertIsNone(ejf.resolve_storage("internal"))
+        self.assertIsNone(ejf.resolve_storage("emmc"))
+        self.assertIsNone(ejf.resolve_storage("  INTERNAL "))  # trimmed + case-insensitive
+
+    def test_flash_command_external_includes_storage(self):
+        self.assertEqual(
+            ejf.flash_command("qa", "nvme0n1p1"),
+            ["sudo", "./nvsdkmanager_flash.sh", "--storage", "nvme0n1p1",
+             "--nv-auto-config", "--username", "qa"])
+
+    def test_flash_command_internal_omits_storage(self):
+        cmd = ejf.flash_command("qa", None)
+        self.assertEqual(
+            cmd, ["sudo", "./nvsdkmanager_flash.sh", "--nv-auto-config", "--username", "qa"])
+        self.assertNotIn("--storage", cmd)
+
+    def test_cmd_flash_passes_resolved_storage_to_run_flash(self):
+        # end-to-end wiring: `--storage internal` must reach run_flash as None (eMMC),
+        # with every hardware/tree gate stubbed out.
+        args = ejf.build_parser().parse_args(["flash", "--storage", "internal", "--skip-post"])
+        with mock.patch.object(ejf, "check_host_tools", return_value=True), \
+             mock.patch.object(ejf, "load_canonical_manifest", return_value=None), \
+             mock.patch.object(ejf, "ensure_tree", return_value=True), \
+             mock.patch.object(ejf, "run_preflight", return_value=ejf.EXIT_OK), \
+             mock.patch.object(ejf, "current_usb_pid", return_value=ejf.USB_PID_RECOVERY), \
+             mock.patch.object(ejf, "run_flash", return_value=True) as run_flash:
+            self.assertEqual(ejf.cmd_flash(args), ejf.EXIT_OK)
+        # run_flash(l4t, username, password, storage) — storage is the 4th positional arg
+        self.assertIsNone(run_flash.call_args[0][3])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

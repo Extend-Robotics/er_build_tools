@@ -274,7 +274,7 @@ hdr "== 3. Verdict =="
 case "$module_state:$tree_state" in
     post-pcn:patched)  ok "GO — module needs the patch and the tree has it. Flash away."; exit 0;;
     post-pcn:*)        bad "DO NOT FLASH — this module needs the patch and the tree does NOT have it (see section 2)."; exit 1;;
-    pre-pcn:patched)   ok "GO — pre-PCN module; patched tree lays its eMMC out 64 MiB short (harmless, rootfs is on NVMe)."; exit 0;;
+    pre-pcn:patched)   ok "GO — pre-PCN module; patched tree lays the eMMC 64 MiB short of stock, which still fits and boots a pre-PCN module (whichever device holds the rootfs)."; exit 0;;
     pre-pcn:stock)     ok "GO — pre-PCN module, stock layout fits."; exit 0;;
     pre-pcn:*)         warn "pre-PCN module, but the flash tree is in an unexpected state — fix section 2 first."; exit 2;;
     not-applicable:*)  warn "patch not applicable to the connected device — this script can't vouch for the flash."; exit 2;;
