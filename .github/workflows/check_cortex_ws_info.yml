@@ -1,0 +1,29 @@
+name: Check cortex_ws_info
+
+on: [push]
+
+jobs:
+  check_cortex_ws_info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+
+      # the payload runs inside the 20.04 images' Python 3.8 —
+      # test on that, not on whatever ubuntu-latest ships
+      - name: set up Python 3.8
+        uses: actions/setup-python@v3
+        with:
+          python-version: "3.8"
+
+      - name: install PyYAML
+        shell: bash
+        run: python3 -m pip install pyyaml
+
+      - name: python syntax check payload
+        shell: bash
+        run: python3 -m py_compile bin/cortex_ws_info.py
+
+      - name: run cortex_ws_info tests
+        shell: bash
+        run: python3 tests/test_cortex_ws_info.py
