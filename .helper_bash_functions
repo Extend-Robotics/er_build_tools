@@ -247,6 +247,10 @@ er_jetson_flash_preflight() { _fetch_and_call_remote_script "bin/jetson-flash-pr
 er_jetson_flash() { _fetch_and_call_remote_script_with python3 "bin/er_jetson_flash.py" "$@"; }
 # PAT converted to env before any process spawns, so it never appears in argv/ps.
 er_update_source_repos() { GITHUB_PAT="${1:-${GITHUB_PAT:-}}" _fetch_and_call_remote_script "bin/update-source-repos.sh"; }
+# Spec-vs-actual table per workspace repo: declared branch and as-built SHA from
+# the provenance files baked into the image, current HEAD and dirty from git.
+# Replaces `wstool info` on the ros1/ros2/bridge workspaces (all colcon).
+cortex_ws_info() { _fetch_and_call_remote_script_with python3 "bin/cortex_ws_info.py" "$@"; }
 
 # python linters
 LINTER_VERSIONS_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/linter_versions.env"
