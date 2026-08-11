@@ -148,12 +148,28 @@ function confirm() {
 	esac
 }
 FIND_PYTHON_FILES_SCRIPT="$HOME/.find_python_files.sh"
+# Refresh a cached remote file on every call so org-wide config changes propagate to dev
+# boxes; only fall back to the cached copy (with a warning) when the fetch fails, so
+# offline machines keep working with the last-known config instead of hard-failing.
+_refresh_cached_remote_file() {
+    local url="$1" dest="$2" tmp="$2.tmp.$$"
+    if wget -q --timeout=5 --tries=1 -O "$tmp" "$url" && [ -s "$tmp" ]; then
+        mv "$tmp" "$dest"
+        return 0
+    fi
+    rm -f "$tmp"
+    if [ -s "$dest" ]; then
+        echo -e "${Yellow}Warning: using cached ${dest} (refresh from ${url} failed)${Color_Off}" >&2
+        return 0
+    fi
+    echo -e "${Red}Failed to fetch ${url} and no cached ${dest} exists${Color_Off}" >&2
+    return 1
+}
 check_find_python_files() {
-  if ! [ -x "$FIND_PYTHON_FILES_SCRIPT" ]; then
-	  wget -qO "$FIND_PYTHON_FILES_SCRIPT" \
-		https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/find_python_files.sh
-	  chmod +x "$FIND_PYTHON_FILES_SCRIPT"
-  fi
+  _refresh_cached_remote_file \
+    https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/find_python_files.sh \
+    "$FIND_PYTHON_FILES_SCRIPT" || return 1
+  chmod +x "$FIND_PYTHON_FILES_SCRIPT"
 }
 alias cgrep="grep --color=always"
 ps_aux() { ps aux | cgrep $1 | grep -v grep ; }
@@ -253,16 +269,7 @@ LINTER_VERSIONS_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_
 LINTER_MAX_LINE_LENGTH="140"
 
 check_linter_versions() {
-    if ! [ -s /tmp/linter_versions.env ]; then
-        echo -e "${Yellow}Fetching ${LINTER_VERSIONS_URL}...${Color_Off}" >&2
-        local tmp=/tmp/linter_versions.env.tmp
-        if ! wget -qO "$tmp" "$LINTER_VERSIONS_URL" || ! [ -s "$tmp" ]; then
-            echo -e "${Red}Failed to fetch ${LINTER_VERSIONS_URL}${Color_Off}" >&2
-            rm -f "$tmp"
-            return 1
-        fi
-        mv "$tmp" /tmp/linter_versions.env
-    fi
+    _refresh_cached_remote_file "$LINTER_VERSIONS_URL" /tmp/linter_versions.env || return 1
     source /tmp/linter_versions.env
     local var
     for var in LINTER_PYTHON_VERSION LINTER_PYLINT_VERSION LINTER_FLAKE8_VERSION LINTER_RUFF_VERSION; do
@@ -293,7 +300,7 @@ find_python_files_here() {
   check_find_python_files
   "$FIND_PYTHON_FILES_SCRIPT"
 }
-check_pylintrc() { if ! [ -f /tmp/pylintrc ]; then wget -O /tmp/pylintrc https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/pylintrc; fi; }
+check_pylintrc() { _refresh_cached_remote_file https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/pylintrc /tmp/pylintrc; }
 check_apt_package() {
     if dpkg -l | grep -qw "$1"; then
         return 0
@@ -308,7 +315,7 @@ check_apt_package() {
 # tree; uv's 3.8 then fails with "No module named encodings" both at build and shim launch.)
 er_flake8_here() (
     unset PYTHONHOME PYTHONPATH
-    check_pylintrc
+    check_pylintrc || return 1
     check_linter_versions || return 1
     ensure_uv_tool_pinned "flake8" "$LINTER_FLAKE8_VERSION" "$LINTER_PYTHON_VERSION" || return 1
     echo -e "${Yellow}Running flake8...${Color_Off}" >&2
@@ -316,7 +323,7 @@ er_flake8_here() (
 )
 er_pylint_here() (
     unset PYTHONHOME PYTHONPATH
-    check_pylintrc
+    check_pylintrc || return 1
     check_linter_versions || return 1
     ensure_uv_tool_pinned "pylint" "$LINTER_PYLINT_VERSION" "$LINTER_PYTHON_VERSION" || return 1
     echo -e "${Yellow}Running pylint...${Color_Off}" >&2
@@ -325,7 +332,7 @@ er_pylint_here() (
 er_pylint_sorted_here() { er_pylint_here | sort -V | grep -v "\*\*\*\*\*\*\*\*"; return ${PIPESTATUS[0]}; }
 er_pylint_single_file() (
     unset PYTHONHOME PYTHONPATH
-    check_pylintrc
+    check_pylintrc || return 1
     check_linter_versions || return 1
     ensure_uv_tool_pinned "pylint" "$LINTER_PYLINT_VERSION" "$LINTER_PYTHON_VERSION" || return 1
     echo -e "${Yellow}Running pylint on $1...${Color_Off}" >&2
