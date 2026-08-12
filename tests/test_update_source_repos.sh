@@ -3,7 +3,7 @@
 # it (skipping those marked SKIP_CHECK); sourcing this would run the suite.
 # Self-contained tests for bin/update-source-repos.sh + bin/update_source_repos.py.
 # No docker, no network: docker/curl are PATH shims; the payload is exercised
-# against real local git repos via the ER_CATKIN_WS override.
+# against real local git repos via the ER_CATKIN_WS / ER_WORKSPACES overrides.
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${REPO:-${here}/..}"
@@ -74,10 +74,41 @@ advance_remote() {
   rm -rf "$tmp"
 }
 
+# Every payload invocation points the image-wide branch record at a nonexistent
+# file so a real /cortex/rosinstall_branches.yaml can never leak into a test.
 run_payload() { # [stdin-file] ; uses $ws; sets $out and $rc
   local stdin_src="${1:-/dev/null}"
-  out="$(ER_CATKIN_WS="$ws" python3 "$PAYLOAD" < "$stdin_src" 2>&1)"
+  out="$(ER_CATKIN_WS="$ws" \
+         ER_IMAGE_WIDE_BRANCH_RECORD="${IMAGE_WIDE_RECORD_OVERRIDE:-$base_tmp/no_such_record.yaml}" \
+         python3 "$PAYLOAD" < "$stdin_src" 2>&1)"
   rc=$?
+}
+
+run_payload_multi() { # <colon-separated-workspaces> [stdin-file] ; sets $out and $rc
+  local ws_list="$1" stdin_src="${2:-/dev/null}"
+  out="$(ER_WORKSPACES="$ws_list" \
+         ER_IMAGE_WIDE_BRANCH_RECORD="${IMAGE_WIDE_RECORD_OVERRIDE:-$base_tmp/no_such_record.yaml}" \
+         python3 "$PAYLOAD" < "$stdin_src" 2>&1)"
+  rc=$?
+}
+
+# new_root_repo <name> [branch] -> bare remote at $remotes/<name>.git, clone at $ws/<name>
+new_root_repo() {
+  local name="$1" branch="${2:-main}"
+  git init -q --bare -b "$branch" "$remotes/$name.git"
+  git clone -q "$remotes/$name.git" "$ws/$name" 2>/dev/null
+  git -C "$ws/$name" commit -q --allow-empty -m c1
+  git -C "$ws/$name" push -q origin "$branch"
+}
+
+# detach_at_stale_commit <name> <branch> -> detach the clone at a commit the
+# remote branch has since moved past, and delete the local branch (CI-image shape)
+detach_at_stale_commit() {
+  local name="$1" branch="$2"
+  git -C "$src/$name" fetch -q origin
+  git -C "$src/$name" checkout -q --detach HEAD
+  git -C "$src/$name" branch -q -D "$branch"
+  advance_remote "$name" "$branch"
 }
 
 # ---------- payload: workspace gate ----------
@@ -249,6 +280,126 @@ assert_eq "detached tip: exit 10 (already at tip)" 10 "$rc"
 assert_contains "detached tip: auto message" "$out" "tip of origin/main"
 tip_branch="$(git -C "$src/repo" symbolic-ref --short HEAD)"
 assert_eq "detached tip: on main" "main" "$tip_branch"
+
+# ---------- payload: baked branch record resolves detached HEADs ----------
+# (a) .repos map shape in <workspace>/build_branches.yaml decides an ambiguous
+#     detached HEAD (two candidate branches) without prompting
+new_workspace rec_map
+new_repo repo alpha
+git -C "$src/repo" push -q origin alpha:zeta
+git -C "$src/repo" fetch -q origin
+git -C "$src/repo" checkout -q --detach HEAD
+git -C "$src/repo" branch -q -D alpha
+advance_remote repo alpha
+advance_remote repo zeta
+printf 'repositories:\n  repo:\n    version: zeta\n' > "$ws/build_branches.yaml"
+run_payload
+assert_eq "record map shape: exit 0" 0 "$rc"
+assert_contains "record map shape: updated" "$out" "updated     repo"
+assert_contains "record map shape: used the record" "$out" "branch record"
+assert_not_contains "record map shape: no picker" "$out" "Choose a branch"
+record_branch="$(git -C "$src/repo" symbolic-ref --short HEAD)"
+assert_eq "record map shape: on zeta" "zeta" "$record_branch"
+
+# (b) wstool-list shape in the image-wide record (per-workspace file absent)
+new_workspace rec_wstool
+new_repo repo alpha
+git -C "$src/repo" push -q origin alpha:zeta
+git -C "$src/repo" fetch -q origin
+git -C "$src/repo" checkout -q --detach HEAD
+git -C "$src/repo" branch -q -D alpha
+advance_remote repo alpha
+advance_remote repo zeta
+printf -- '- git:\n    local-name: repo\n    uri: https://example.invalid/repo.git\n    version: alpha\n' \
+  > "$base_tmp/rosinstall_branches.yaml"
+IMAGE_WIDE_RECORD_OVERRIDE="$base_tmp/rosinstall_branches.yaml" run_payload
+assert_eq "record wstool shape: exit 0" 0 "$rc"
+assert_contains "record wstool shape: updated" "$out" "updated     repo"
+assert_not_contains "record wstool shape: no picker" "$out" "Choose a branch"
+record_branch="$(git -C "$src/repo" symbolic-ref --short HEAD)"
+assert_eq "record wstool shape: on alpha" "alpha" "$record_branch"
+
+# (c) corrupt record degrades loudly to branch guessing, run still succeeds
+new_workspace rec_corrupt
+new_repo repo
+detach_at_stale_commit repo main
+printf '{{{not yaml\n' > "$ws/build_branches.yaml"
+run_payload
+assert_eq "corrupt record: exit 0 (guessing still updates)" 0 "$rc"
+assert_contains "corrupt record: unreadable error" "$out" "is unreadable"
+assert_contains "corrupt record: loud fallback" "$out" "falling back to branch guessing"
+assert_contains "corrupt record: updated via guessing" "$out" "updated     repo"
+
+# (d) record names a branch origin no longer has -> warn, guess instead
+new_workspace rec_gone
+new_repo repo
+detach_at_stale_commit repo main
+printf 'repositories:\n  repo:\n    version: deleted_branch\n' > "$ws/build_branches.yaml"
+run_payload
+assert_eq "record branch gone: exit 0" 0 "$rc"
+assert_contains "record branch gone: warned" "$out" "origin has no such branch"
+record_branch="$(git -C "$src/repo" symbolic-ref --short HEAD)"
+assert_eq "record branch gone: guessed main" "main" "$record_branch"
+
+# (e) record must not clobber local commits on a detached HEAD
+new_workspace rec_localcommit
+new_repo repo
+git -C "$src/repo" checkout -q --detach HEAD
+git -C "$src/repo" commit -q --allow-empty -m local-orphan
+printf 'repositories:\n  repo:\n    version: main\n' > "$ws/build_branches.yaml"
+run_payload
+assert_eq "record with local commits: exit 10" 10 "$rc"
+assert_contains "record with local commits: left alone" "$out" "not on any remote branch"
+still_detached="$(git -C "$src/repo" symbolic-ref --short -q HEAD; echo "rc=$?")"
+assert_contains "record with local commits: still detached" "$still_detached" "rc=1"
+
+# ---------- payload: multi-workspace iteration ----------
+new_workspace multi_a
+new_repo repo_a
+advance_remote repo_a main
+multi_a_ws="$ws"
+new_workspace multi_b
+new_repo repo_b
+advance_remote repo_b main
+multi_b_ws="$ws"
+run_payload_multi "$multi_a_ws:$multi_b_ws"
+assert_eq "multi-ws: exit 11 (updates, but no ros1 workspace)" 11 "$rc"
+assert_contains "multi-ws: workspace banner a" "$out" "===== workspace $multi_a_ws ====="
+assert_contains "multi-ws: workspace banner b" "$out" "===== workspace $multi_b_ws ====="
+assert_contains "multi-ws: repo_a updated" "$out" "updated     $multi_a_ws: repo_a"
+assert_contains "multi-ws: repo_b updated" "$out" "updated     $multi_b_ws: repo_b"
+assert_contains "multi-ws: manual rebuild warning a" "$out" "workspace $multi_a_ws was updated — rebuild it manually"
+assert_contains "multi-ws: manual rebuild warning b" "$out" "workspace $multi_b_ws was updated — rebuild it manually"
+
+# a workspace whose basename is .catkin_ws is the ros1 workspace -> exit 0,
+# and only the other workspace gets the manual-rebuild warning
+new_workspace "ros1home/.catkin_ws"
+new_repo repo_r1
+advance_remote repo_r1 main
+ros1_ws="$ws"
+new_workspace multi_c
+new_repo repo_c
+advance_remote repo_c main
+run_payload_multi "$ros1_ws:$ws"
+assert_eq "multi-ws with ros1: exit 0" 0 "$rc"
+assert_contains "multi-ws with ros1: ros2-style ws warned" "$out" "workspace $ws was updated — rebuild it manually"
+assert_not_contains "multi-ws with ros1: ros1 ws not warned" "$out" "workspace $ros1_ws was updated"
+
+# ER_WORKSPACES naming a missing directory fails fast
+run_payload_multi "$base_tmp/does_not_exist"
+assert_eq "missing workspace: exit 1" 1 "$rc"
+assert_contains "missing workspace: message" "$out" "not found on disk"
+
+# ---------- payload: repos at the workspace root (beside src/) ----------
+new_workspace rootrepo
+new_repo inside_src
+new_root_repo beside_src
+advance_remote inside_src main
+advance_remote beside_src main
+run_payload
+assert_eq "root repo: exit 0" 0 "$rc"
+assert_contains "root repo: src repo updated" "$out" "updated     inside_src"
+assert_contains "root repo: root repo updated" "$out" "updated     beside_src"
 
 # ---------- payload: submodule recovery & safety ----------
 # stale submodule pointer from an interrupted previous run must self-heal, not dirty-skip
@@ -454,6 +605,12 @@ FAKE_PAYLOAD_RC=1 run_wrapper "$good_pat"
 assert_eq "payload failed: exit 1" 1 "$rc"
 docker_log="$(cat "$DOCKER_LOG")"
 assert_not_contains "payload failed: no build" "$docker_log" "colcon_build"
+
+FAKE_PAYLOAD_RC=11 run_wrapper "$good_pat"
+assert_eq "manual-rebuild-only workspaces: exit 0" 0 "$rc"
+assert_contains "manual-rebuild-only workspaces: message" "$out" "rebuild them manually"
+docker_log="$(cat "$DOCKER_LOG")"
+assert_not_contains "manual-rebuild-only workspaces: no build" "$docker_log" "colcon_build"
 
 FAKE_BUILD_RC=97 run_wrapper "$good_pat"
 assert_eq "helpers missing: exit 97" 97 "$rc"

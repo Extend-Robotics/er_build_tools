@@ -6,8 +6,10 @@
 # Usage: update-source-repos.sh <github-pat>     (or set GITHUB_PAT in the env)
 #
 # Runs on the Jetson HOST. Injects bin/update_source_repos.py into the er_robot
-# container to fetch + fast-forward every repo under /cortex/.catkin_ws/src,
-# then runs colcon_build inside the container when anything updated.
+# container to fetch + fast-forward every repo in the cortex source workspaces
+# (ros1 + ros2 + bridge), then runs colcon_build inside the container when the
+# ros1 workspace updated. Other updated workspaces only get a warning from the
+# payload — rebuilding them is manual for now.
 #
 # Env overrides: PAYLOAD (local payload path — skips the raw.githubusercontent
 #                fetch; used by tests/dev), ER_BUILD_TOOLS_BRANCH, NO_COLOR
@@ -117,6 +119,11 @@ payload_rc=$?
 case "$payload_rc" in
     10)
         ok "Everything already up to date — skipping colcon_build."
+        exit 0
+        ;;
+    11)
+        echo ""
+        warn "Only workspaces without an automated rebuild were updated — rebuild them manually (see the payload warnings above); skipping colcon_build."
         exit 0
         ;;
     0)
