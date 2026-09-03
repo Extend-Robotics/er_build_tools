@@ -1064,9 +1064,22 @@ def resolve_password(args):
     password = args.password or os.environ.get("ER_JETSON_PASSWORD")
     if password:
         return password
-    if sys.stdin.isatty():
-        return getpass.getpass("  Jetson password for user '{}': ".format(args.username)) or None
-    return None
+    if not sys.stdin.isatty():
+        return None
+    if args.command == "flash":
+        print("  The flash creates Jetson user '{}' (change with --username) and needs the password "
+              "that will be set for it; the post-flash steps then ssh in with the same password.".format(args.username))
+        prompt = "  Password to set for new user '{}': ".format(args.username)
+    else:
+        print("  Post-flash steps ssh into {} as existing user '{}' (change with --username).".format(
+            DEF_HOST, args.username))
+        prompt = "  Current ssh password of '{}': ".format(args.username)
+    print("  (non-interactive: export ER_JETSON_PASSWORD)")
+    try:
+        return getpass.getpass(prompt) or None
+    except EOFError:
+        print()
+        return None
 
 
 NO_PASSWORD_MSG = "no Jetson password: set ER_JETSON_PASSWORD, pass --password, or run interactively"
