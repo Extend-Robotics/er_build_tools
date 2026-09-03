@@ -110,10 +110,11 @@ re-patch and a hand-held flash. This tool makes that whole loop one command.
 
 - deployment machine: `python3` (3.8+), `sshpass`, `curl`; for the rebuild path
   also `tar`, `sudo`, and `gh` (or `$GH_TOKEN`) only if the NVIDIA download
-  fails. Ubuntu 20.04 or 22.04: the full rebuild (both downloads, NVIDIA's
-  prerequisites script, `apply_binaries.sh`, manifest verification) was
-  exercised on 22.04.5; NVIDIA's host-OS list for flashing JetPack 5.1.2 stops
-  at 20.04, so a 22.04 flash is outside their support matrix
+  fails. Ubuntu 20.04 or 22.04: the full rebuild and a complete flash (QSPI,
+  eMMC and NVMe rootfs, board booted to R35.4.1 with the rootfs on
+  `nvme0n1p1`) were exercised from a 22.04.5 host. NVIDIA's own host-OS list
+  for flashing JetPack 5.1.2 stops at 20.04, so that remains outside their
+  support matrix even though it works
 - Jetson connected over the flashing USB-C port, in forced recovery for the
   flash itself (the preflight prints how)
 
