@@ -860,5 +860,16 @@ class PostFlashSubcommandTest(unittest.TestCase):
         cmd.assert_called_once()
 
 
+class LineBufferedOutputTest(unittest.TestCase):
+    """Status lines must not lag behind the ssh children's output when stdout is a pipe (tee, logs)."""
+
+    def test_main_switches_stdout_to_line_buffering(self):
+        fake_stdout = mock.Mock()
+        with mock.patch.object(sys, "stdout", fake_stdout), \
+                mock.patch.object(ejf, "cmd_verify", return_value=ejf.EXIT_OK):
+            self.assertEqual(ejf.main(["verify"]), ejf.EXIT_OK)
+        fake_stdout.reconfigure.assert_called_once_with(line_buffering=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

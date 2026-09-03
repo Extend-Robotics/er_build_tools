@@ -1128,6 +1128,9 @@ def default_subcommand(argv):
 
 def main(argv=None):
     """Entry point. Returns the process exit code."""
+    # Status lines must interleave correctly with the ssh children's output when
+    # stdout is a pipe (tee, log files) — a block-buffered stdout prints them late.
+    sys.stdout.reconfigure(line_buffering=True)
     argv = default_subcommand(list(sys.argv[1:] if argv is None else argv))
     args = build_parser().parse_args(argv)
     try:
