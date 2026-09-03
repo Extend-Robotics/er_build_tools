@@ -18,6 +18,7 @@ Verification compares the tree's configs/flash scripts against a CANONICAL manif
 committed in this repo (bin/er_jetson_flash_manifest.json) — a JetPack 5.1.2 extract
 is deterministic, so one manifest serves every machine and catches re-extracted,
 half-deleted or hand-edited trees. Extra subcommands: verify / restore /
+post-flash (stage 4 alone, on a board that is already flashed and booted) /
 make-manifest (regenerate the canonical manifest after an intentional change).
 
 Background: docs/er-jetson-flash.md, docs/jetson-flash-preflight.md.
@@ -1008,18 +1009,25 @@ def build_parser():
         description="Check, restore, flash and provision an AGX Orin QA cortex (JetPack 5.1.2).")
     sub = parser.add_subparsers(dest="command")
 
-    flash = sub.add_parser("flash", parents=[shared],
+    credentials = argparse.ArgumentParser(add_help=False)
+    credentials.add_argument("--username", default=DEF_USER, help="Jetson user (default: %(default)s)")
+    credentials.add_argument("--password", default=None,
+                             help="password for that user (default: $ER_JETSON_PASSWORD, else '{}'). "
+                                  "Prefer the env var for non-defaults — argv is visible in ps".format(DEF_PASS))
+
+    flash = sub.add_parser("flash", parents=[shared, credentials],
                            help="full pipeline: verify/restore, preflight, flash, post-flash (default)")
-    flash.add_argument("--username", default=DEF_USER, help="Jetson user to create (default: %(default)s)")
-    flash.add_argument("--password", default=None,
-                       help="password for that user (default: $ER_JETSON_PASSWORD, else '{}'). "
-                            "Prefer the env var for non-defaults — argv is visible in ps".format(DEF_PASS))
     flash.add_argument("--storage", default="nvme0n1p1",
                        help="rootfs location: 'nvme' (=nvme0n1p1, the default) for an NVMe SSD, "
                             "'internal' (or 'emmc') for the on-board eMMC on boards with no NVMe, "
                             "or a raw device such as sda1 (default: %(default)s)")
     flash.add_argument("--yes", action="store_true", help="assume yes on restore prompts (sudo may still ask)")
     flash.add_argument("--skip-post", action="store_true", help="stop after the flash itself")
+
+    sub.add_parser("post-flash", parents=[shared, credentials],
+                   help="only the post-flash provisioning (clock, apt, nvidia-jetpack, sanity checks) "
+                        "on a board that is already flashed and booted — the recovery path when a "
+                        "flash run failed after the flash itself")
 
     sub.add_parser("verify", parents=[shared],
                    help="check tree presence, patch and manifest; changes nothing")
@@ -1046,6 +1054,28 @@ def check_host_tools(skip_post):
     return True
 
 
+def resolve_password(args):
+    """--password, else $ER_JETSON_PASSWORD, else the default."""
+    return args.password or os.environ.get("ER_JETSON_PASSWORD") or DEF_PASS
+
+
+def provision(target, password):
+    """Post-flash setup and sanity checks; the pipeline's final stage."""
+    if not post_flash(target, password):
+        return EXIT_FAILURE
+    if not sanity_checks(target, password):
+        return EXIT_FAILURE
+    hdr("== DONE — board flashed, provisioned and sane ==")
+    return EXIT_OK
+
+
+def cmd_post_flash(args):
+    """Post-flash provisioning only, for a board that is already flashed and booted."""
+    if not check_host_tools(skip_post=False):
+        return EXIT_FAILURE
+    return provision("{}@{}".format(args.username, DEF_HOST), resolve_password(args))
+
+
 def cmd_flash(args):
     """Full pipeline."""
     if not check_host_tools(args.skip_post):
@@ -1059,19 +1089,13 @@ def cmd_flash(args):
     if current_usb_pid() != USB_PID_RECOVERY:
         bad("board is not in forced recovery — put it there and re-run (see preflight banner)")
         return EXIT_UNDETERMINED
-    password = args.password or os.environ.get("ER_JETSON_PASSWORD") or DEF_PASS
+    password = resolve_password(args)
     if not run_flash(args.l4t, args.username, password, resolve_storage(args.storage)):
         return EXIT_FAILURE
     if args.skip_post:
         good("flash done; post-flash setup skipped (--skip-post)")
         return EXIT_OK
-    target = "{}@{}".format(args.username, DEF_HOST)
-    if not post_flash(target, password):
-        return EXIT_FAILURE
-    if not sanity_checks(target, password):
-        return EXIT_FAILURE
-    hdr("== DONE — board flashed, provisioned and sane ==")
-    return EXIT_OK
+    return provision("{}@{}".format(args.username, DEF_HOST), password)
 
 
 def cmd_verify(args):
@@ -1116,6 +1140,8 @@ def main(argv=None):
             return EXIT_FAILURE
         if args.command == "make-manifest":
             return EXIT_OK if make_manifest(args.l4t, args.output) else EXIT_FAILURE
+        if args.command == "post-flash":
+            return cmd_post_flash(args)
         return cmd_flash(args)
     except KeyboardInterrupt:
         print()

@@ -827,5 +827,38 @@ class UnpackProgressTest(unittest.TestCase):
         self.assertIn(" 25%", out)
 
 
+class PostFlashSubcommandTest(unittest.TestCase):
+    """`post-flash`: re-run only the post-flash provisioning on an already flashed, booted board."""
+
+    def test_parses_with_the_flash_credentials_options(self):
+        args = ejf.build_parser().parse_args(["post-flash", "--username", "qa", "--password", "s3cret"])
+        self.assertEqual(args.command, "post-flash")
+        self.assertEqual((args.username, args.password), ("qa", "s3cret"))
+
+    def test_runs_post_flash_then_sanity_checks_against_the_usb_host(self):
+        args = ejf.build_parser().parse_args(["post-flash", "--username", "qa"])
+        with mock.patch.object(ejf, "check_host_tools", return_value=True), \
+                mock.patch.object(ejf, "post_flash", return_value=True) as post, \
+                mock.patch.object(ejf, "sanity_checks", return_value=True) as sanity, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ejf.cmd_post_flash(args), ejf.EXIT_OK)
+        post.assert_called_once_with("qa@" + ejf.DEF_HOST, ejf.DEF_PASS)
+        sanity.assert_called_once_with("qa@" + ejf.DEF_HOST, ejf.DEF_PASS)
+
+    def test_post_flash_failure_skips_sanity_and_fails(self):
+        args = ejf.build_parser().parse_args(["post-flash"])
+        with mock.patch.object(ejf, "check_host_tools", return_value=True), \
+                mock.patch.object(ejf, "post_flash", return_value=False), \
+                mock.patch.object(ejf, "sanity_checks") as sanity, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ejf.cmd_post_flash(args), ejf.EXIT_FAILURE)
+        sanity.assert_not_called()
+
+    def test_main_dispatches_post_flash(self):
+        with mock.patch.object(ejf, "cmd_post_flash", return_value=ejf.EXIT_OK) as cmd:
+            self.assertEqual(ejf.main(["post-flash"]), ejf.EXIT_OK)
+        cmd.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

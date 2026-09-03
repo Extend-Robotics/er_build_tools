@@ -8,6 +8,7 @@ sanity-checked QA cortex:
 er_jetson_flash                      # everything, with extend/extend defaults
 er_jetson_flash --username qa --password s3cret
 er_jetson_flash --storage internal   # board has no NVMe — put the rootfs on the eMMC
+er_jetson_flash post-flash           # stage 5 only: board already flashed and booted
 er_jetson_flash verify               # read-only health check of the flash tree
 er_jetson_flash restore              # fix/restore the flash tree, don't flash
 er_jetson_flash make-manifest        # regenerate the canonical manifest (maintainers)
@@ -64,7 +65,8 @@ just takes longer the first time, while the tool walks a guided reinstall.
    the rootfs lands on the on-board eMMC. Use `internal` for boards with **no NVMe
    fitted** — otherwise the flash writes the eMMC boot GPT and then aborts at
    `Could not stat device /dev/nvme0n1`.
-5. **Post-flash setup**:
+5. **Post-flash setup** (also runnable on its own as `er_jetson_flash post-flash`,
+   the recovery path when a run fails after the flash itself succeeded):
    - waits for the board to boot (USB `0955:7020`) and for ssh
    - fixes the fresh-flash clock skew (apt rejects "future" Release files otherwise)
    - quiets the apt-daily race: the clock jump makes systemd's persistent
