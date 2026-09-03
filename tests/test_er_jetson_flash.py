@@ -19,6 +19,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -453,7 +454,7 @@ class ObtainTarballTest(unittest.TestCase):
     def setUp(self):
         self.cache_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.cache_dir)
-        self.tarball = ejf.L4tTarball("Jetson_Linux_R35.4.1_aarch64.tbz2", hashlib.sha256(self.PAYLOAD).hexdigest())
+        self.tarball = ejf.L4tTarball("Jetson_Linux_R35.4.1_aarch64.tbz2", hashlib.sha256(self.PAYLOAD).hexdigest(), 4096)
         self.dest = os.path.join(self.cache_dir, self.tarball.name)
         self.calls = []
 
@@ -543,7 +544,7 @@ class FakeRun:
 class FetchFromNvidiaTest(unittest.TestCase):
     """fetch_from_nvidia: one curl to the public L4T release URL, rc mapped to a reason."""
 
-    TARBALL = ejf.L4tTarball("Jetson_Linux_R35.4.1_aarch64.tbz2", "0" * 64)
+    TARBALL = ejf.L4tTarball("Jetson_Linux_R35.4.1_aarch64.tbz2", "0" * 64, 4096)
 
     def test_downloads_from_the_public_release_url(self):
         run = FakeRun({("curl", "curl"): (0, "")})
@@ -565,7 +566,7 @@ class FetchFromNvidiaTest(unittest.TestCase):
 class FetchFromArchiveTest(unittest.TestCase):
     """fetch_from_archive: GitHub token -> release JSON -> asset id -> octet-stream download."""
 
-    TARBALL = ejf.L4tTarball("Jetson_Linux_R35.4.1_aarch64.tbz2", "0" * 64)
+    TARBALL = ejf.L4tTarball("Jetson_Linux_R35.4.1_aarch64.tbz2", "0" * 64, 4096)
     RELEASE_JSON = json.dumps({"assets": [
         {"id": 479622079, "name": "Jetson_Linux_R35.4.1_aarch64.tbz2"},
         {"id": 479622051, "name": "SHA256SUMS"}]})
@@ -665,8 +666,8 @@ def pinned_to_fixture_payloads():
     """L4T_BSP/L4T_ROOTFS re-pinned to the RebuildTreeTest fixture payloads' hashes."""
     return mock.patch.multiple(
         ejf,
-        L4T_BSP=ejf.L4tTarball(ejf.L4T_BSP.name, hashlib.sha256(b"bsp").hexdigest()),
-        L4T_ROOTFS=ejf.L4tTarball(ejf.L4T_ROOTFS.name, hashlib.sha256(b"rootfs").hexdigest()))
+        L4T_BSP=ejf.L4tTarball(ejf.L4T_BSP.name, hashlib.sha256(b"bsp").hexdigest(), ejf.L4T_BSP.unpacked_bytes),
+        L4T_ROOTFS=ejf.L4tTarball(ejf.L4T_ROOTFS.name, hashlib.sha256(b"rootfs").hexdigest(), ejf.L4T_ROOTFS.unpacked_bytes))
 
 
 class RebuildTreeTest(unittest.TestCase):
@@ -712,6 +713,15 @@ class RebuildTreeTest(unittest.TestCase):
         ])
         self.assertTrue(os.path.isdir(self.jetpack_dir))
 
+    def test_tar_steps_report_progress_against_the_pinned_unpacked_size(self):
+        runner = RecordingRunner()
+        with mock.patch.object(ejf, "UnpackProgress") as progress:
+            self.assertTrue(self.rebuild(runner))
+        self.assertEqual(progress.call_args_list, [
+            mock.call("unpacking the BSP", self.jetpack_dir, ejf.L4T_BSP.unpacked_bytes),
+            mock.call("unpacking the sample rootfs", self.jetpack_dir, ejf.L4T_ROOTFS.unpacked_bytes),
+        ])
+
     def test_failing_step_stops_the_sequence(self):
         runner = RecordingRunner(fail_on="apply_binaries")
         self.assertFalse(self.rebuild(runner))
@@ -730,6 +740,60 @@ class RebuildTreeTest(unittest.TestCase):
         self.assertEqual(runner.calls, [])
         self.assertFalse(os.path.exists(self.cache_dir))
         self.prereqs.start()
+
+
+class FormatProgressTest(unittest.TestCase):
+    """format_progress: a bar, a capped percentage, MiB counts and m:ss elapsed."""
+
+    def test_midway(self):
+        line = ejf.format_progress("unpacking the BSP", written=512 * (1 << 20), expected=1024 * (1 << 20), elapsed_s=65)
+        self.assertIn("unpacking the BSP", line)
+        self.assertIn(" 50%", line)
+        self.assertIn("512 / 1024 MiB", line)
+        self.assertIn("1:05", line)
+        bar_cells = line[line.index("[") + 1:line.index("]")]
+        self.assertEqual(len(bar_cells), ejf.PROGRESS_BAR_WIDTH)
+        self.assertEqual(bar_cells.count("#"), ejf.PROGRESS_BAR_WIDTH // 2)
+
+    def test_overshoot_is_capped_at_full(self):
+        line = ejf.format_progress("x", written=1300 * (1 << 20), expected=1000 * (1 << 20), elapsed_s=3)
+        self.assertIn("100%", line)
+        self.assertIn("#" * ejf.PROGRESS_BAR_WIDTH, line)
+
+    def test_nothing_written_yet(self):
+        line = ejf.format_progress("x", written=0, expected=1000 * (1 << 20), elapsed_s=0)
+        self.assertIn("  0%", line)
+        self.assertIn("0:00", line)
+        self.assertNotIn("#", line)
+
+
+def run_with_unpack_progress(free_readings, isatty):
+    """Run a short sleep inside UnpackProgress with disk_usage fed from free_readings; returns stdout."""
+    readings = iter(free_readings)
+    usage = mock.Mock(side_effect=lambda _path: mock.Mock(free=next(readings)))
+    out = io.StringIO()
+    out.isatty = lambda: isatty
+    with mock.patch.object(ejf.shutil, "disk_usage", usage), contextlib.redirect_stdout(out), \
+            ejf.UnpackProgress("unpacking the BSP", "/some/dir", expected=100 * (1 << 20), interval_s=0.01):
+        time.sleep(0.08)
+    return out.getvalue()
+
+
+class UnpackProgressTest(unittest.TestCase):
+    """UnpackProgress: reports growth of the target filesystem while the wrapped step runs."""
+
+    def test_tty_output_updates_in_place_and_ends_on_a_fresh_line(self):
+        gib = 1 << 30
+        out = run_with_unpack_progress([10 * gib] + [10 * gib - 50 * (1 << 20)] * 50, isatty=True)
+        self.assertIn("\r", out)
+        self.assertIn(" 50%", out)
+        self.assertTrue(out.endswith("\n"))
+
+    def test_non_tty_output_is_plain_lines(self):
+        gib = 1 << 30
+        out = run_with_unpack_progress([10 * gib] + [10 * gib - 25 * (1 << 20)] * 50, isatty=False)
+        self.assertNotIn("\r", out)
+        self.assertIn(" 25%", out)
 
 
 if __name__ == "__main__":

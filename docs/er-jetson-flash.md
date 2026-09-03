@@ -45,9 +45,15 @@ just takes longer the first time, while the tool walks a guided reinstall.
    - Downloads land in `~/Downloads/nvidia/sdkm_downloads` — the directory and
      file names SDK Manager used, so a machine with its old cache rebuilds offline.
    - Fail-fast before the 2.2 GB download: `curl` and `tar` must be present and the
-     target filesystem needs `REBUILD_MIN_FREE_GIB` free. Everything else the flash
-     host needs (`qemu-user-static`, `binfmt-support`, `lz4`, `abootimg`, `dtc`, …)
-     is installed by NVIDIA's `l4t_flash_prerequisites.sh` as part of the rebuild.
+     target filesystem needs `REBUILD_MIN_FREE_GIB` (12 GiB) free — the built tree
+     is ~7 GiB plus the tarballs. A flash then adds its generated images; a tree
+     that has flashed measured ~38 GB in total, so budget for that before flashing.
+     Everything else the flash host needs (`qemu-user-static`, `binfmt-support`,
+     `lz4`, `abootimg`, `dtc`, …) is installed by NVIDIA's
+     `l4t_flash_prerequisites.sh` as part of the rebuild.
+   - The two tar steps are silent for minutes, so the tool shows a progress bar for
+     them, measured as growth of the target filesystem against the tarball's known
+     unpacked size.
 3. **Preflight gate**: runs [`er_jetson_flash_preflight`](jetson-flash-preflight.md);
    anything but GO stops the pipeline.
 4. **Flash**: `sudo ./nvsdkmanager_flash.sh [--storage <dev>] --nv-auto-config
@@ -104,9 +110,10 @@ re-patch and a hand-held flash. This tool makes that whole loop one command.
 
 - deployment machine: `python3` (3.8+), `sshpass`, `curl`; for the rebuild path
   also `tar`, `sudo`, and `gh` (or `$GH_TOKEN`) only if the NVIDIA download
-  fails. Ubuntu 20.04 or 22.04: the tree build was exercised on 22.04.5;
-  NVIDIA's host-OS list for flashing JetPack 5.1.2 stops at 20.04, so a 22.04
-  flash is outside their support matrix
+  fails. Ubuntu 20.04 or 22.04: the full rebuild (both downloads, NVIDIA's
+  prerequisites script, `apply_binaries.sh`, manifest verification) was
+  exercised on 22.04.5; NVIDIA's host-OS list for flashing JetPack 5.1.2 stops
+  at 20.04, so a 22.04 flash is outside their support matrix
 - Jetson connected over the flashing USB-C port, in forced recovery for the
   flash itself (the preflight prints how)
 

@@ -46,7 +46,9 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-L4tTarball = collections.namedtuple("L4tTarball", "name sha256")
+# unpacked_bytes: apparent size of the extracted archive, the denominator of the
+# unpack progress bar (the tarballs are hash-pinned, so it is a constant).
+L4tTarball = collections.namedtuple("L4tTarball", "name sha256 unpacked_bytes")
 
 HOME = os.path.expanduser("~")
 DEFAULT_L4T = os.path.join(HOME, "nvidia", "nvidia_sdk",
@@ -75,16 +77,17 @@ ARCHIVE_REPO = "Extend-Robotics/er_jetson_archive"
 ARCHIVE_TAG = "r35.4.1"
 GITHUB_API = "https://api.github.com"
 L4T_BSP = L4tTarball("Jetson_Linux_R35.4.1_aarch64.tbz2",
-                     "72b75a0c7fa3bf6ef41ae06634bb67c38a92682155d1206026dbee4a6b9a016f")
+                     "72b75a0c7fa3bf6ef41ae06634bb67c38a92682155d1206026dbee4a6b9a016f", 851352350)
 L4T_ROOTFS = L4tTarball("Tegra_Linux_Sample-Root-Filesystem_R35.4.1_aarch64.tbz2",
-                        "27656df9aa7d0171905d8da18197cb2bc5225e12bcd8a9abda3922b5eba94ccd")
+                        "27656df9aa7d0171905d8da18197cb2bc5225e12bcd8a9abda3922b5eba94ccd", 4355714973)
 # Same directory and file names SDK Manager used, so a machine with its old
 # download cache rebuilds offline.
 TARBALL_CACHE_DIR = os.path.join(HOME, "Downloads", "nvidia", "sdkm_downloads")
 # Checked before the 2.2 GB download. Everything else the host needs (qemu,
 # binfmt, lz4, abootimg, dtc, ...) is installed by NVIDIA's l4t_flash_prerequisites.sh.
 REBUILD_HOST_TOOLS = (("curl", "curl"), ("tar", "tar"))
-REBUILD_MIN_FREE_GIB = 25
+# Measured: ~7 GiB for the built tree plus 2.2 GiB of tarballs when not cached.
+REBUILD_MIN_FREE_GIB = 12
 
 DEF_USER = "extend"
 DEF_PASS = "extend"
@@ -421,15 +424,79 @@ def check_rebuild_prerequisites(jetpack_dir):
     return True
 
 
+PROGRESS_BAR_WIDTH = 30
+
+
+def format_progress(description, written, expected, elapsed_s):
+    """One progress line: bar, percent (capped), MiB written/expected, m:ss elapsed."""
+    fraction = min(written / float(expected), 1.0) if expected > 0 else 0.0
+    filled = int(round(fraction * PROGRESS_BAR_WIDTH))
+    minutes, seconds = divmod(int(elapsed_s), 60)
+    return "  {}: [{}{}] {:3d}%  {} / {} MiB  {}:{:02d}".format(
+        description, "#" * filled, " " * (PROGRESS_BAR_WIDTH - filled), int(fraction * 100),
+        written >> 20, expected >> 20, minutes, seconds)
+
+
+class UnpackProgress:
+    """Context manager: while the body runs, report how much the filesystem under
+    measure_dir has grown against the tarball's known unpacked size.
+
+    Free-space delta rather than walking the tree: cheap, and independent of the
+    tar version (tar 1.30 on the 20.04 machines lacks the newer checkpoint formats).
+    A tty gets an in-place line; anything else gets a plain line per interval.
+    """
+
+    def __init__(self, description, measure_dir, expected, interval_s=None):
+        self.description = description
+        self.measure_dir = measure_dir
+        self.expected = expected
+        self.is_tty = sys.stdout.isatty()
+        self.interval_s = interval_s if interval_s is not None else (1.0 if self.is_tty else 15.0)
+        self.free_at_start = None
+        self.started_at = None
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._report_until_stopped, daemon=True)
+
+    def _written(self):
+        return max(self.free_at_start - shutil.disk_usage(self.measure_dir).free, 0)
+
+    def _line(self):
+        return format_progress(self.description, self._written(), self.expected, time.monotonic() - self.started_at)
+
+    def _report_until_stopped(self):
+        while not self.stop.wait(self.interval_s):
+            if self.is_tty:
+                sys.stdout.write("\r" + self._line())
+            else:
+                sys.stdout.write(self._line() + "\n")
+            sys.stdout.flush()
+
+    def __enter__(self):
+        self.free_at_start = shutil.disk_usage(self.measure_dir).free
+        self.started_at = time.monotonic()
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.stop.set()
+        self.thread.join()
+        sys.stdout.write(("\r" if self.is_tty else "") + self._line() + "\n")
+        sys.stdout.flush()
+        return False
+
+
 def rebuild_steps(jetpack_dir, l4t, bsp_path, rootfs_path):
-    """The NVIDIA-documented manual unpack, as (description, argv, cwd) — the same
-    sequence SDK Manager performs, which is why the result matches the manifest.
-    The prerequisites script provides the qemu binfmt that apply_binaries.sh needs."""
+    """The NVIDIA-documented manual unpack, as (description, argv, cwd, unpacked_bytes) —
+    the same sequence SDK Manager performs, which is why the result matches the
+    manifest. unpacked_bytes drives a progress bar for the silent tar steps and is
+    None for the scripts, which print their own output. The prerequisites script
+    provides the qemu binfmt that apply_binaries.sh needs."""
     return [
-        ("unpacking the BSP", ["tar", "xf", bsp_path, "-C", jetpack_dir], None),
-        ("installing the flash host prerequisites", ["sudo", "./tools/l4t_flash_prerequisites.sh"], l4t),
-        ("unpacking the sample rootfs", ["sudo", "tar", "xpf", rootfs_path, "-C", os.path.join(l4t, "rootfs")], None),
-        ("applying the NVIDIA binaries to the rootfs", ["sudo", "./apply_binaries.sh"], l4t),
+        ("unpacking the BSP", ["tar", "xf", bsp_path, "-C", jetpack_dir], None, L4T_BSP.unpacked_bytes),
+        ("installing the flash host prerequisites", ["sudo", "./tools/l4t_flash_prerequisites.sh"], l4t, None),
+        ("unpacking the sample rootfs", ["sudo", "tar", "xpf", rootfs_path, "-C", os.path.join(l4t, "rootfs")],
+         None, L4T_ROOTFS.unpacked_bytes),
+        ("applying the NVIDIA binaries to the rootfs", ["sudo", "./apply_binaries.sh"], l4t, None),
     ]
 
 
@@ -449,9 +516,14 @@ def rebuild_tree(l4t, cache_dir=TARBALL_CACHE_DIR, sources=TARBALL_SOURCES, runn
     os.makedirs(jetpack_dir, exist_ok=True)
     bsp_path = os.path.join(cache_dir, L4T_BSP.name)
     rootfs_path = os.path.join(cache_dir, L4T_ROOTFS.name)
-    for description, argv, cwd in rebuild_steps(jetpack_dir, l4t, bsp_path, rootfs_path):
+    for description, argv, cwd, unpacked_bytes in rebuild_steps(jetpack_dir, l4t, bsp_path, rootfs_path):
         print("  {}: {}{}".format(description, " ".join(argv), "  (in {})".format(cwd) if cwd else ""))
-        if runner(argv, cwd=cwd, check=False).returncode != 0:
+        if unpacked_bytes is None:
+            returncode = runner(argv, cwd=cwd, check=False).returncode
+        else:
+            with UnpackProgress(description, jetpack_dir, unpacked_bytes):
+                returncode = runner(argv, cwd=cwd, check=False).returncode
+        if returncode != 0:
             bad("{} failed".format(description))
             return False
     good("tree built at {}".format(l4t))
