@@ -208,20 +208,44 @@ class QuietAptDailyTest(unittest.TestCase):
         self.assertIn("WARN", out.getvalue())
 
 
+def run_post_flash(**kwargs):
+    """post_flash with every stage stubbed; returns (result, the order the stages ran in)."""
+    order = []
+    with mock.patch.object(ejf, "wait_for", return_value=True), \
+            mock.patch.object(ejf, "remote_run", return_value=mock.Mock(returncode=0, stdout="SSH_OK")), \
+            mock.patch.object(ejf, "quiet_apt_daily", side_effect=lambda *_: order.append("quiet")), \
+            mock.patch.object(ejf, "fix_clock", side_effect=lambda *_: order.append("clock")), \
+            mock.patch.object(ejf, "set_hostname",
+                              side_effect=lambda _t, _p, name: order.append("hostname=" + name) or True), \
+            mock.patch.object(ejf, "jetson_has_internet", return_value=True), \
+            mock.patch.object(ejf, "apt_install_jetpack", side_effect=lambda *_: order.append("apt") or True), \
+            contextlib.redirect_stdout(io.StringIO()):
+        result = ejf.post_flash("extend@192.0.2.1", "pw", **kwargs)
+    return result, order
+
+
 class PostFlashOrderTest(unittest.TestCase):
     """post_flash must quiet apt-daily BEFORE fix_clock — the clock jump is what fires the timers."""
 
     def test_apt_daily_quieted_before_clock_jump(self):
-        order = []
+        result, order = run_post_flash()
+        self.assertTrue(result)
+        self.assertEqual(order, ["quiet", "clock", "apt"])
+
+    def test_hostname_is_set_before_the_long_apt_step(self):
+        result, order = run_post_flash(hostname="qa-cortex-3")
+        self.assertTrue(result)
+        self.assertEqual(order, ["quiet", "clock", "hostname=qa-cortex-3", "apt"])
+
+    def test_hostname_failure_stops_post_flash(self):
         with mock.patch.object(ejf, "wait_for", return_value=True), \
                 mock.patch.object(ejf, "remote_run", return_value=mock.Mock(returncode=0, stdout="SSH_OK")), \
-                mock.patch.object(ejf, "quiet_apt_daily", side_effect=lambda *_: order.append("quiet")), \
-                mock.patch.object(ejf, "fix_clock", side_effect=lambda *_: order.append("clock")), \
-                mock.patch.object(ejf, "jetson_has_internet", return_value=True), \
-                mock.patch.object(ejf, "apt_install_jetpack", side_effect=lambda *_: order.append("apt") or True), \
+                mock.patch.object(ejf, "quiet_apt_daily"), mock.patch.object(ejf, "fix_clock"), \
+                mock.patch.object(ejf, "set_hostname", return_value=False), \
+                mock.patch.object(ejf, "apt_install_jetpack") as apt, \
                 contextlib.redirect_stdout(io.StringIO()):
-            self.assertTrue(ejf.post_flash("extend@192.0.2.1", "pw"))
-        self.assertEqual(order, ["quiet", "clock", "apt"])
+            self.assertFalse(ejf.post_flash("extend@192.0.2.1", "pw", hostname="qa-cortex-3"))
+        apt.assert_not_called()
 
 
 class AptInstallJetpackTest(unittest.TestCase):
@@ -471,7 +495,7 @@ class PostFlashSubcommandTest(unittest.TestCase):
                 mock.patch.object(ejf, "sanity_checks", return_value=True) as sanity, \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(ejf.cmd_post_flash(args), ejf.EXIT_OK)
-        post.assert_called_once_with("qa@" + ejf.DEF_HOST, "from-env")
+        post.assert_called_once_with("qa@" + ejf.DEF_HOST, "from-env", hostname=None)
         sanity.assert_called_once_with("qa@" + ejf.DEF_HOST, "from-env")
 
     def test_no_password_anywhere_fails_before_touching_the_board(self):
@@ -592,6 +616,133 @@ class SshCommandTest(unittest.TestCase):
         self.assertIn("LogLevel=ERROR", argv)
         self.assertEqual(argv[:3], ["sshpass", "-e", "ssh"])
         self.assertEqual(argv[-1], "qa@192.0.2.1")
+
+
+class HostnameOptionTest(unittest.TestCase):
+    """--hostname: an optional DNS label applied to the board during post-flash."""
+
+    def test_accepted_on_flash_and_post_flash(self):
+        for argv in (["flash", "--hostname", "qa-cortex-3"], ["post-flash", "--hostname", "qa-cortex-3"]):
+            self.assertEqual(ejf.build_parser().parse_args(argv).hostname, "qa-cortex-3")
+
+    def test_defaults_to_none(self):
+        self.assertIsNone(ejf.build_parser().parse_args(["flash"]).hostname)
+
+    def test_rejects_anything_but_a_dns_label(self):
+        for bad in ("QA_cortex", "-leading", "trailing-", "has.dot", "a" * 64, ""):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                ejf.build_parser().parse_args(["post-flash", "--hostname", bad])
+
+    def test_post_flash_subcommand_hands_the_hostname_down(self):
+        args = ejf.build_parser().parse_args(["post-flash", "--password", "pw", "--hostname", "qa-cortex-3"])
+        with mock.patch.object(ejf, "check_host_tools", return_value=True), \
+                mock.patch.object(ejf, "post_flash", return_value=True) as post, \
+                mock.patch.object(ejf, "sanity_checks", return_value=True), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ejf.cmd_post_flash(args), ejf.EXIT_OK)
+        self.assertEqual(post.call_args[1].get("hostname"), "qa-cortex-3")
+
+
+def run_set_hostname(read_back):
+    """set_hostname against a fake board whose `hostname` answers read_back; returns (result, commands, output)."""
+    commands = []
+
+    def fake_remote_run(_target, _password, command, **_kwargs):
+        commands.append(command)
+        if command.strip() == "hostname":
+            return mock.Mock(returncode=0, stdout=read_back + "\n")
+        return mock.Mock(returncode=0, stdout="")
+
+    out = io.StringIO()
+    with mock.patch.object(ejf, "remote_run", side_effect=fake_remote_run), contextlib.redirect_stdout(out):
+        result = ejf.set_hostname("extend@192.0.2.1", "pw", "qa-cortex-3")
+    return result, commands, out.getvalue()
+
+
+class SetHostnameTest(unittest.TestCase):
+    """set_hostname: hostnamectl + the 127.0.1.1 line in /etc/hosts, read back to confirm."""
+
+    def test_sets_and_confirms(self):
+        result, commands, out = run_set_hostname(read_back="qa-cortex-3")
+        self.assertTrue(result)
+        joined = "\n".join(commands)
+        self.assertIn("hostnamectl set-hostname qa-cortex-3", joined)
+        self.assertIn("127.0.1.1", joined)
+        self.assertIn("/etc/hosts", joined)
+        self.assertIn("qa-cortex-3", out)
+
+    def test_read_back_mismatch_fails(self):
+        result, _, out = run_set_hostname(read_back="ubuntu")
+        self.assertFalse(result)
+        self.assertIn("FAIL", out)
+
+    def test_whole_edit_runs_under_one_sudo(self):
+        # remote_run only prefixes `sudo -S -p ''`; the remote shell parses && and if
+        # OUTSIDE it, so a compound command must be wrapped in a single sh -c '...'
+        _, commands, _ = run_set_hostname(read_back="qa-cortex-3")
+        sudo_command = commands[0]
+        self.assertTrue(sudo_command.startswith("sh -c '"), sudo_command)
+        self.assertTrue(sudo_command.endswith("'"), sudo_command)
+        self.assertNotIn("'", sudo_command[len("sh -c '"):-1], "an inner single quote would end the sh -c script early")
+
+
+class SetHostnameShellTest(unittest.TestCase):
+    """The exact strings set_hostname sends, executed by a real shell the way the
+    board's login shell would (ssh replaced by `bash -c`; sudo/hostnamectl/hostname
+    are PATH shims; /etc/hosts is a temp file)."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root)
+        self.hosts = os.path.join(self.root, "hosts")
+        self.log = os.path.join(self.root, "calls.log")
+        shims = os.path.join(self.root, "shims")
+        os.mkdir(shims)
+        self.write_shim(shims, "sudo", '#!/bin/bash\nwhile [ "$1" = "-S" ] || [ "$1" = "-p" ]; do [ "$1" = "-p" ] && shift; shift; done\n'
+                        'echo "sudo: $*" >> "$CALLS_LOG"; exec "$@"\n')
+        self.write_shim(shims, "hostnamectl", '#!/bin/bash\necho "hostnamectl $*" >> "$CALLS_LOG"; echo "$2" > "$CALLS_LOG.name"\n')
+        self.write_shim(shims, "hostname", '#!/bin/bash\ncat "$CALLS_LOG.name" 2>/dev/null || echo ubuntu\n')
+        self.env = dict(os.environ, PATH=shims + os.pathsep + os.environ["PATH"], CALLS_LOG=self.log)
+
+    @staticmethod
+    def write_shim(directory, name, body):
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        os.chmod(path, 0o755)
+
+    def run_set(self, hosts_content):
+        with open(self.hosts, "w", encoding="utf-8") as handle:
+            handle.write(hosts_content)
+        out = io.StringIO()
+        with mock.patch.object(ejf, "ssh_cmd", return_value=["bash", "-c"]), \
+                mock.patch.object(ejf, "ETC_HOSTS", self.hosts), \
+                mock.patch.dict(os.environ, self.env), contextlib.redirect_stdout(out):
+            result = ejf.set_hostname("extend@192.0.2.1", "pw", "qa-cortex-3")
+        with open(self.hosts, encoding="utf-8") as handle:
+            hosts = handle.read()
+        with open(self.log, encoding="utf-8") as handle:
+            calls = handle.read()
+        return result, hosts, calls, out.getvalue()
+
+    def test_replaces_the_existing_127_0_1_1_line(self):
+        result, hosts, calls, _ = self.run_set("127.0.0.1\tlocalhost\n127.0.1.1\tubuntu\n::1\tlocalhost ip6-localhost\n")
+        self.assertTrue(result)
+        self.assertEqual(hosts, "127.0.0.1\tlocalhost\n127.0.1.1 qa-cortex-3\n::1\tlocalhost ip6-localhost\n")
+        self.assertIn("hostnamectl set-hostname qa-cortex-3", calls)
+        self.assertIn("sudo: sh -c", calls)
+
+    def test_appends_when_there_is_no_127_0_1_1_line(self):
+        result, hosts, _, _ = self.run_set("127.0.0.1\tlocalhost\n")
+        self.assertTrue(result)
+        self.assertEqual(hosts, "127.0.0.1\tlocalhost\n127.0.1.1 qa-cortex-3\n")
+
+    def test_edit_happens_inside_sudo(self):
+        _, _, calls, _ = self.run_set("127.0.1.1\tubuntu\n")
+        sudo_lines = [line for line in calls.splitlines() if line.startswith("sudo: ")]
+        self.assertEqual(len(sudo_lines), 1)
+        self.assertIn("sh -c", sudo_lines[0])
+        self.assertIn(self.hosts, sudo_lines[0])
 
 
 if __name__ == "__main__":

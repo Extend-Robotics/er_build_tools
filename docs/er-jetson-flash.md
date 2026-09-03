@@ -6,6 +6,7 @@ sanity-checked QA cortex:
 
 ```
 er_jetson_flash                      # everything; user 'extend', password prompted
+er_jetson_flash --hostname qa-cortex-3   # ...and name the machine (set during post-flash)
 ER_JETSON_PASSWORD=... er_jetson_flash --username qa   # non-interactive
 er_jetson_flash --storage internal   # board has no NVMe — put the rootfs on the eMMC
 er_jetson_flash post-flash           # stage 5 only: board already flashed and booted
@@ -71,6 +72,9 @@ just takes longer the first time, while the tool walks a guided reinstall.
    the recovery path when a run fails after the flash itself succeeded):
    - waits for the board to boot (USB `0955:7020`) and for ssh
    - fixes the fresh-flash clock skew (apt rejects "future" Release files otherwise)
+   - with `--hostname`, names the board (`hostnamectl` + the `127.0.1.1` line in
+     `/etc/hosts`, read back to confirm); NVIDIA's preseed has no hostname option,
+     so this is the earliest point it can happen
    - quiets the apt-daily race: the clock jump makes systemd's persistent
      apt-daily timers fire "missed" runs immediately, and their apt-get holds
      `/var/lib/apt/lists/lock` for a minute or more (`Could not get lock

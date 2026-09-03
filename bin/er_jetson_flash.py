@@ -38,6 +38,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import select
 import shutil
 import socket
@@ -125,6 +126,7 @@ APT_PROXY_CONF = "/etc/apt/apt.conf.d/99er-usb-proxy"
 # wait below still guards the install against anything else holding dpkg.
 APT_DAILY_UNITS = "apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service"
 APT_LOCK_WAIT_S = 600
+ETC_HOSTS = "/etc/hosts"
 
 USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 RED = "\033[0;31m" if USE_COLOR else ""
@@ -953,8 +955,31 @@ def sanity_checks(target, password):
     return all_good
 
 
-def post_flash(target, password):
-    """Boot-wait, clock fix, apt (bridged over USB when offline), sanity checks."""
+def set_hostname(target, password, hostname):
+    """Set the board's hostname (hostnamectl + the 127.0.1.1 line in /etc/hosts) and read it back.
+
+    One `sh -c` so the whole edit runs under the single sudo that remote_run
+    prefixes; the remote shell would otherwise run everything after the first &&
+    unprivileged. hostname is a validated DNS label, so it needs no quoting.
+    """
+    script = ('hostnamectl set-hostname {h} && '
+              'if grep -q "^127\\.0\\.1\\.1[[:space:]]" {hosts}; '
+              'then sed -i "s/^127\\.0\\.1\\.1[[:space:]].*/127.0.1.1 {h}/" {hosts}; '
+              'else echo "127.0.1.1 {h}" >> {hosts}; fi').format(h=hostname, hosts=ETC_HOSTS)
+    res = remote_run(target, password, "sh -c '{}'".format(script), sudo=True)
+    if res.returncode != 0:
+        bad("setting hostname failed:\n{}".format((res.stdout or "").strip()[-500:]))
+        return False
+    actual = (remote_run(target, password, "hostname").stdout or "").strip()
+    if actual != hostname:
+        bad("hostname reads back as '{}' after setting '{}'".format(actual, hostname))
+        return False
+    good("hostname set to {}".format(hostname))
+    return True
+
+
+def post_flash(target, password, hostname=None):
+    """Boot-wait, clock fix, hostname, apt (bridged over USB when offline)."""
     hdr("== Post-flash setup ==")
     host = target.split("@", 1)[1]
     if not wait_for("board to boot (USB device mode)",
@@ -971,6 +996,8 @@ def post_flash(target, password):
     good("ssh login works")
     quiet_apt_daily(target, password)
     fix_clock(target, password)
+    if hostname and not set_hostname(target, password, hostname):
+        return False
 
     if jetson_has_internet(target, password):
         good("Jetson has its own internet access")
@@ -1007,8 +1034,18 @@ def make_manifest(l4t, output):
 # ---------------------------------------------------------------- CLI
 
 
+def dns_label(value):
+    """argparse type for --hostname: one DNS label (RFC 1123), the only form a bare
+    hostname can safely take."""
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", value):
+        raise argparse.ArgumentTypeError(
+            "'{}' is not a valid hostname: 1-63 lowercase letters, digits or hyphens, "
+            "not starting or ending with a hyphen".format(value))
+    return value
+
+
 def build_parser():
-    """argparse tree for the four subcommands (flash is the default)."""
+    """argparse tree for the subcommands (flash is the default)."""
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--l4t", default=DEFAULT_L4T, help="Linux_for_Tegra tree (default: %(default)s)")
     shared.add_argument("--manifest", default=None,
@@ -1024,6 +1061,9 @@ def build_parser():
     credentials.add_argument("--password", default=None,
                              help="password for that user (default: $ER_JETSON_PASSWORD, else prompted). "
                                   "Prefer the env var or the prompt — argv is visible in ps")
+    credentials.add_argument("--hostname", default=None, type=dns_label,
+                             help="machine name to give the board during post-flash, e.g. qa-cortex-3 "
+                                  "(default: leave NVIDIA's)")
 
     flash = sub.add_parser("flash", parents=[shared, credentials],
                            help="full pipeline: verify/restore, preflight, flash, post-flash (default)")
@@ -1092,9 +1132,9 @@ def resolve_password(args):
 NO_PASSWORD_MSG = "no Jetson password: set ER_JETSON_PASSWORD, pass --password, or run interactively"
 
 
-def provision(target, password):
+def provision(target, password, hostname):
     """Post-flash setup and sanity checks; the pipeline's final stage."""
-    if not post_flash(target, password):
+    if not post_flash(target, password, hostname=hostname):
         return EXIT_FAILURE
     if not sanity_checks(target, password):
         return EXIT_FAILURE
@@ -1110,7 +1150,7 @@ def cmd_post_flash(args):
     if not password:
         bad(NO_PASSWORD_MSG)
         return EXIT_FAILURE
-    return provision("{}@{}".format(args.username, DEF_HOST), password)
+    return provision("{}@{}".format(args.username, DEF_HOST), password, args.hostname)
 
 
 def cmd_flash(args):
@@ -1135,7 +1175,7 @@ def cmd_flash(args):
     if args.skip_post:
         good("flash done; post-flash setup skipped (--skip-post)")
         return EXIT_OK
-    return provision("{}@{}".format(args.username, DEF_HOST), password)
+    return provision("{}@{}".format(args.username, DEF_HOST), password, args.hostname)
 
 
 def cmd_verify(args):
