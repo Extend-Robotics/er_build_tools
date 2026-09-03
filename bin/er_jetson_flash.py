@@ -3,8 +3,10 @@
 
 Pipeline (subcommand `flash`, the default):
   1. verify   — is the local flash tree present, manifest-clean and num_sectors-patched?
-                (a guided `sdkmanager --cli` reinstall restores it when not — nothing
-                is tied to any particular machine; a fresh machine just takes longer)
+                (when not, the tree is rebuilt from NVIDIA's two public L4T R35.4.1
+                tarballs, with the private er_jetson_archive release as the fallback
+                source — no SDK Manager, so no NVIDIA login and no host-OS gate;
+                nothing is tied to any particular machine)
   2. preflight— run bin/jetson-flash-preflight.sh: GO / DO NOT FLASH gate
   3. flash    — sudo ./nvsdkmanager_flash.sh [--storage <dev>] --nv-auto-config --username ...
                 (--storage picks the rootfs device; omitted => rootfs on the internal eMMC)
@@ -19,13 +21,17 @@ half-deleted or hand-edited trees. Extra subcommands: verify / restore /
 make-manifest (regenerate the canonical manifest after an intentional change).
 
 Background: docs/er-jetson-flash.md, docs/jetson-flash-preflight.md.
-History: an SDK Manager GUI uninstall deleted the whole patched tree (2026-07-16);
-NVIDIA's catalog only lists 5.1.2 with BOTH --show-all-versions --archived-versions.
+History: an SDK Manager GUI uninstall deleted the whole patched tree (2026-07-16),
+and SDK Manager refuses to install JetPack 5.1.2 on anything newer than Ubuntu 20.04.
 
 Python 3.8, stdlib only. Exit codes: 0 = success, 1 = failure, 2 = undetermined/aborted.
 """
+# Single file by design: the er_jetson_flash shell helper fetches and runs this
+# module on its own, so it cannot be split to satisfy max-module-lines.
+# pylint: disable=too-many-lines
 
 import argparse
+import collections
 import glob
 import hashlib
 import json
@@ -39,6 +45,8 @@ import tempfile
 import threading
 import time
 from urllib.parse import urlsplit
+
+L4tTarball = collections.namedtuple("L4tTarball", "name sha256")
 
 HOME = os.path.expanduser("~")
 DEFAULT_L4T = os.path.join(HOME, "nvidia", "nvidia_sdk",
@@ -59,12 +67,24 @@ RAW_URL_BASE = ("https://raw.githubusercontent.com/Extend-Robotics/er_build_tool
 PREFLIGHT_REL = "bin/jetson-flash-preflight.sh"
 MANIFEST_REL = "bin/er_jetson_flash_manifest.json"
 
-# Both flags are required: NVIDIA pruned 5.1.2 from the default AND the plain
-# archived catalog server-side; only the combination brings it back.
-SDKMANAGER_CMD = ["sdkmanager", "--cli", "--action", "install", "--login-type", "devzone",
-                  "--product", "Jetson", "--target-os", "Linux", "--version", "5.1.2",
-                  "--show-all-versions", "--archived-versions",
-                  "--target", "JETSON_AGX_ORIN_TARGETS", "--license", "accept"]
+# JetPack 5.1.2 = L4T R35.4.1. The flash tree is rebuilt from NVIDIA's two public
+# release tarballs (no SDK Manager, so no NVIDIA login and no host-OS gate); the
+# private er_jetson_archive release holds byte-identical copies as delisting insurance.
+NVIDIA_L4T_URL_BASE = "https://developer.download.nvidia.com/embedded/L4T/r35_Release_v4.1/release"
+ARCHIVE_REPO = "Extend-Robotics/er_jetson_archive"
+ARCHIVE_TAG = "r35.4.1"
+GITHUB_API = "https://api.github.com"
+L4T_BSP = L4tTarball("Jetson_Linux_R35.4.1_aarch64.tbz2",
+                     "72b75a0c7fa3bf6ef41ae06634bb67c38a92682155d1206026dbee4a6b9a016f")
+L4T_ROOTFS = L4tTarball("Tegra_Linux_Sample-Root-Filesystem_R35.4.1_aarch64.tbz2",
+                        "27656df9aa7d0171905d8da18197cb2bc5225e12bcd8a9abda3922b5eba94ccd")
+# Same directory and file names SDK Manager used, so a machine with its old
+# download cache rebuilds offline.
+TARBALL_CACHE_DIR = os.path.join(HOME, "Downloads", "nvidia", "sdkm_downloads")
+# Checked before the 2.2 GB download. Everything else the host needs (qemu,
+# binfmt, lz4, abootimg, dtc, ...) is installed by NVIDIA's l4t_flash_prerequisites.sh.
+REBUILD_HOST_TOOLS = (("curl", "curl"), ("tar", "tar"))
+REBUILD_MIN_FREE_GIB = 25
 
 DEF_USER = "extend"
 DEF_PASS = "extend"
@@ -183,6 +203,98 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def tarball_is_valid(path, expected_sha256):
+    """True when the file exists and its sha256 matches the pinned value."""
+    return os.path.isfile(path) and sha256_file(path) == expected_sha256
+
+
+def fetch_from_nvidia(tarball, dest_path):
+    """Download from NVIDIA's public L4T release directory. None on success, else a reason."""
+    url = "{}/{}".format(NVIDIA_L4T_URL_BASE, tarball.name)
+    res = subprocess.run(["curl", "-fSL", "--retry", "3", url, "-o", dest_path], check=False)
+    return None if res.returncode == 0 else "curl rc {} fetching {}".format(res.returncode, url)
+
+
+def github_token():
+    """$GH_TOKEN, else the gh CLI's stored token, else None."""
+    token = os.environ.get("GH_TOKEN")
+    if token:
+        return token
+    if not shutil.which("gh"):
+        return None
+    res = subprocess.run(["gh", "auth", "token"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         universal_newlines=True, check=False)
+    if res.returncode != 0:
+        return None
+    return res.stdout.strip() or None
+
+
+def fetch_from_archive(tarball, dest_path):
+    """Download the same file from the private er_jetson_archive release. None on success, else a reason.
+
+    Private-repo assets are only reachable via the API asset endpoint with
+    Accept: application/octet-stream; plain curl because the deployment machines'
+    gh 2.4 `release download` cannot target a directory or overwrite.
+    """
+    token = github_token()
+    if not token:
+        return "no GitHub token (set GH_TOKEN or run `gh auth login`) for {}".format(ARCHIVE_REPO)
+    auth_header = "Authorization: Bearer {}".format(token)
+    release_url = "{}/repos/{}/releases/tags/{}".format(GITHUB_API, ARCHIVE_REPO, ARCHIVE_TAG)
+    lookup = subprocess.run(["curl", "-fsSL", "-H", auth_header, release_url],
+                            stdout=subprocess.PIPE, universal_newlines=True, check=False)
+    if lookup.returncode != 0:
+        return "release lookup failed (curl rc {}) for {}".format(lookup.returncode, release_url)
+    try:
+        assets = json.loads(lookup.stdout).get("assets", [])
+    except ValueError:
+        return "release lookup returned non-JSON for {}".format(release_url)
+    asset_ids = [asset["id"] for asset in assets if asset.get("name") == tarball.name]
+    if not asset_ids:
+        return "asset {} not in release {} of {}".format(tarball.name, ARCHIVE_TAG, ARCHIVE_REPO)
+    asset_url = "{}/repos/{}/releases/assets/{}".format(GITHUB_API, ARCHIVE_REPO, asset_ids[0])
+    res = subprocess.run(["curl", "-fSL", "--retry", "3", "-H", auth_header,
+                          "-H", "Accept: application/octet-stream", asset_url, "-o", dest_path], check=False)
+    return None if res.returncode == 0 else "curl rc {} fetching {}".format(res.returncode, asset_url)
+
+
+TARBALL_SOURCES = (("nvidia.com", fetch_from_nvidia), ("er_jetson_archive", fetch_from_archive))
+
+
+def obtain_tarball(tarball, cache_dir, sources):
+    """Get cache_dir/<name> with the pinned sha256, trying each (label, fetch) source in turn.
+
+    fetch(tarball, dest_path) returns None on success or a reason string. A cached
+    file is reused only when its sha256 matches; a downloaded file is kept only when
+    it does. Prints which source served it so the operator can tell nvidia.com
+    from the private archive fallback.
+    """
+    dest_path = os.path.join(cache_dir, tarball.name)
+    if tarball_is_valid(dest_path, tarball.sha256):
+        good("{}: cached copy sha256-verified ({})".format(tarball.name, cache_dir))
+        return True
+    if os.path.exists(dest_path):
+        warn("{}: cached copy fails sha256 — re-downloading".format(tarball.name))
+        os.unlink(dest_path)
+    os.makedirs(cache_dir, exist_ok=True)
+    previous_failure = None
+    for label, fetch in sources:
+        fallback_note = " (fallback: {})".format(previous_failure) if previous_failure else ""
+        print("  downloading {} — source: {}{}".format(tarball.name, label, fallback_note))
+        reason = fetch(tarball, dest_path)
+        if reason is None and not tarball_is_valid(dest_path, tarball.sha256):
+            reason = "sha256 mismatch"
+        if reason is None:
+            good("{}: sha256 verified (source: {})".format(tarball.name, label))
+            return True
+        warn("{}: {}".format(label, reason))
+        if os.path.exists(dest_path):
+            os.unlink(dest_path)
+        previous_failure = "{}: {}".format(label, reason)
+    bad("{}: no source could provide it".format(tarball.name))
+    return False
+
+
 def build_manifest(l4t):
     """Hash the load-bearing files of the tree: {relative path: sha256}."""
     manifest = {}
@@ -282,31 +394,68 @@ def verify_tree(l4t, manifest):
     return state in ("patched", "stock")
 
 
-# ---------------------------------------------------------------- tree restore
+# ---------------------------------------------------------------- tree rebuild
 
 
-def guided_sdkmanager():
-    """Run the interactive sdkmanager reinstall with exact operator guidance."""
-    hdr("== Guided sdkmanager reinstall ==")
-    print("""  The flash tree is missing or unhealthy — reinstalling it via NVIDIA SDK Manager.
-  This needs YOUR interactive NVIDIA Developer login; everything else is preset.
+def nearest_existing_ancestor(path):
+    """The deepest existing directory on path's chain (for disk_usage before mkdir)."""
+    path = os.path.abspath(path)
+    while not os.path.isdir(path):
+        path = os.path.dirname(path)
+    return path
 
-  Answers to give when the wizard asks anything not already preset:
-    - system configuration:      DESELECT 'Host Machine', keep 'Target Hardware'
-    - additional SDKs:           None
-    - 'flash the module?':       No   (this tool patches the tree, then flashes)
-    - 'install SDK components on your Jetson?':  Skip / decline
-                                 (done post-flash via apt, pinned to 5.1.2-b104)
 
-  Downloads reuse ~/Downloads/nvidia/sdkm_downloads when present (mostly offline).
-""")
-    print("  running: {}\n".format(" ".join(SDKMANAGER_CMD)))
-    try:
-        res = subprocess.run(SDKMANAGER_CMD, check=False)
-    except FileNotFoundError:
-        bad("sdkmanager is not installed on this machine")
+def check_rebuild_prerequisites(jetpack_dir):
+    """Host tools and free disk for a tree rebuild; prints what is missing."""
+    missing_packages = [package for tool, package in REBUILD_HOST_TOOLS if not shutil.which(tool)]
+    missing_tools = [tool for tool, _ in REBUILD_HOST_TOOLS if not shutil.which(tool)]
+    if missing_tools:
+        bad("missing host tools for the tree rebuild: {} — sudo apt-get install {}".format(
+            ", ".join(missing_tools), " ".join(missing_packages)))
         return False
-    return res.returncode == 0
+    free_gib = shutil.disk_usage(nearest_existing_ancestor(jetpack_dir)).free / float(1 << 30)
+    if free_gib < REBUILD_MIN_FREE_GIB:
+        bad("only {:.1f} GiB free under {} — the rebuild needs {} GiB".format(
+            free_gib, jetpack_dir, REBUILD_MIN_FREE_GIB))
+        return False
+    return True
+
+
+def rebuild_steps(jetpack_dir, l4t, bsp_path, rootfs_path):
+    """The NVIDIA-documented manual unpack, as (description, argv, cwd) — the same
+    sequence SDK Manager performs, which is why the result matches the manifest.
+    The prerequisites script provides the qemu binfmt that apply_binaries.sh needs."""
+    return [
+        ("unpacking the BSP", ["tar", "xf", bsp_path, "-C", jetpack_dir], None),
+        ("installing the flash host prerequisites", ["sudo", "./tools/l4t_flash_prerequisites.sh"], l4t),
+        ("unpacking the sample rootfs", ["sudo", "tar", "xpf", rootfs_path, "-C", os.path.join(l4t, "rootfs")], None),
+        ("applying the NVIDIA binaries to the rootfs", ["sudo", "./apply_binaries.sh"], l4t),
+    ]
+
+
+def rebuild_tree(l4t, cache_dir=TARBALL_CACHE_DIR, sources=TARBALL_SOURCES, runner=subprocess.run):
+    """Build a fresh JetPack 5.1.2 flash tree at l4t from the L4T R35.4.1 tarballs."""
+    hdr("== Rebuilding the flash tree from the L4T R35.4.1 tarballs ==")
+    jetpack_dir = os.path.abspath(os.path.join(l4t, os.pardir))
+    if not check_rebuild_prerequisites(jetpack_dir):
+        return False
+    for tarball in (L4T_BSP, L4T_ROOTFS):
+        if not obtain_tarball(tarball, cache_dir, sources):
+            return False
+    print("  validating sudo (host prerequisites, rootfs extraction and apply_binaries.sh need root)...")
+    if runner(["sudo", "-v"], check=False).returncode != 0:
+        bad("sudo credentials unavailable")
+        return False
+    os.makedirs(jetpack_dir, exist_ok=True)
+    bsp_path = os.path.join(cache_dir, L4T_BSP.name)
+    rootfs_path = os.path.join(cache_dir, L4T_ROOTFS.name)
+    for description, argv, cwd in rebuild_steps(jetpack_dir, l4t, bsp_path, rootfs_path):
+        print("  {}: {}{}".format(description, " ".join(argv), "  (in {})".format(cwd) if cwd else ""))
+        if runner(argv, cwd=cwd, check=False).returncode != 0:
+            bad("{} failed".format(description))
+            return False
+    good("tree built at {}".format(l4t))
+    return True
 
 
 def move_tree_aside(l4t):
@@ -321,21 +470,22 @@ def move_tree_aside(l4t):
 
 
 def ensure_tree(l4t, manifest, assume_yes):
-    """Verify the tree; guided-sdkmanager reinstall and re-verify when bad."""
+    """Verify the tree; rebuild from the L4T tarballs and re-verify when bad."""
     # A stock tree only differs from known-good by the patch — apply it before the
-    # manifest comparison so a fresh sdkmanager extract doesn't trigger a restore.
+    # manifest comparison so a fresh extract doesn't trigger a restore.
     if xml_patch_state(l4t) == "stock" and not apply_patch(l4t):
         return False
     if verify_tree(l4t, manifest):
         return apply_patch(l4t)
 
     hdr("== Restore ==")
-    if not confirm("  Reinstall the flash tree via sdkmanager (interactive login)?", assume_yes):
-        warn("reinstall declined")
+    if not confirm("  Rebuild the flash tree from the L4T R35.4.1 tarballs "
+                   "(~2.2 GB download unless cached, needs sudo)?", assume_yes):
+        warn("rebuild declined")
         return False
     move_tree_aside(l4t)
-    if not guided_sdkmanager():
-        bad("sdkmanager did not complete successfully")
+    if not rebuild_tree(l4t):
+        bad("tree rebuild did not complete")
         return False
     if xml_patch_state(l4t) == "stock" and not apply_patch(l4t):
         return False
@@ -788,7 +938,7 @@ def build_parser():
                        help="rootfs location: 'nvme' (=nvme0n1p1, the default) for an NVMe SSD, "
                             "'internal' (or 'emmc') for the on-board eMMC on boards with no NVMe, "
                             "or a raw device such as sda1 (default: %(default)s)")
-    flash.add_argument("--yes", action="store_true", help="assume yes on restore prompts (login stays interactive)")
+    flash.add_argument("--yes", action="store_true", help="assume yes on restore prompts (sudo may still ask)")
     flash.add_argument("--skip-post", action="store_true", help="stop after the flash itself")
 
     sub.add_parser("verify", parents=[shared],
