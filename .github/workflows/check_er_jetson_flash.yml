@@ -22,4 +22,6 @@ jobs:
 
       - name: run er_jetson_flash tests
         shell: bash
-        run: python3 tests/test_er_jetson_flash.py
+        run: |
+          python3 tests/test_er_jetson_flash.py
+          python3 tests/test_er_jetson_flash_rebuild.py
