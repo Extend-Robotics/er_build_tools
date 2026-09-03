@@ -33,6 +33,7 @@ Python 3.8, stdlib only. Exit codes: 0 = success, 1 = failure, 2 = undetermined/
 
 import argparse
 import collections
+import getpass
 import glob
 import hashlib
 import json
@@ -91,7 +92,6 @@ REBUILD_HOST_TOOLS = (("curl", "curl"), ("tar", "tar"))
 REBUILD_MIN_FREE_GIB = 12
 
 DEF_USER = "extend"
-DEF_PASS = "extend"
 DEF_HOST = "192.168.55.1"
 # NVIDIA (vendor 0955) USB product ids: 7023 = AGX Orin in forced recovery (RCM,
 # the only state flash.sh can start from), 7020 = booted L4T in USB device mode.
@@ -1012,8 +1012,8 @@ def build_parser():
     credentials = argparse.ArgumentParser(add_help=False)
     credentials.add_argument("--username", default=DEF_USER, help="Jetson user (default: %(default)s)")
     credentials.add_argument("--password", default=None,
-                             help="password for that user (default: $ER_JETSON_PASSWORD, else '{}'). "
-                                  "Prefer the env var for non-defaults — argv is visible in ps".format(DEF_PASS))
+                             help="password for that user (default: $ER_JETSON_PASSWORD, else prompted). "
+                                  "Prefer the env var or the prompt — argv is visible in ps")
 
     flash = sub.add_parser("flash", parents=[shared, credentials],
                            help="full pipeline: verify/restore, preflight, flash, post-flash (default)")
@@ -1055,8 +1055,18 @@ def check_host_tools(skip_post):
 
 
 def resolve_password(args):
-    """--password, else $ER_JETSON_PASSWORD, else the default."""
-    return args.password or os.environ.get("ER_JETSON_PASSWORD") or DEF_PASS
+    """--password, else $ER_JETSON_PASSWORD, else an interactive prompt; None when none is possible.
+
+    Deliberately no default: this repo is public."""
+    password = args.password or os.environ.get("ER_JETSON_PASSWORD")
+    if password:
+        return password
+    if sys.stdin.isatty():
+        return getpass.getpass("  Jetson password for user '{}': ".format(args.username)) or None
+    return None
+
+
+NO_PASSWORD_MSG = "no Jetson password: set ER_JETSON_PASSWORD, pass --password, or run interactively"
 
 
 def provision(target, password):
@@ -1073,12 +1083,20 @@ def cmd_post_flash(args):
     """Post-flash provisioning only, for a board that is already flashed and booted."""
     if not check_host_tools(skip_post=False):
         return EXIT_FAILURE
-    return provision("{}@{}".format(args.username, DEF_HOST), resolve_password(args))
+    password = resolve_password(args)
+    if not password:
+        bad(NO_PASSWORD_MSG)
+        return EXIT_FAILURE
+    return provision("{}@{}".format(args.username, DEF_HOST), password)
 
 
 def cmd_flash(args):
     """Full pipeline."""
     if not check_host_tools(args.skip_post):
+        return EXIT_FAILURE
+    password = resolve_password(args)
+    if not password:
+        bad(NO_PASSWORD_MSG)
         return EXIT_FAILURE
     if not ensure_tree(args.l4t, load_canonical_manifest(args.manifest), args.yes):
         return EXIT_FAILURE
@@ -1089,7 +1107,6 @@ def cmd_flash(args):
     if current_usb_pid() != USB_PID_RECOVERY:
         bad("board is not in forced recovery — put it there and re-run (see preflight banner)")
         return EXIT_UNDETERMINED
-    password = resolve_password(args)
     if not run_flash(args.l4t, args.username, password, resolve_storage(args.storage)):
         return EXIT_FAILURE
     if args.skip_post:
@@ -1113,7 +1130,10 @@ VALUE_OPTS = frozenset(("--l4t", "--manifest", "--username", "--password", "--st
 
 
 def default_subcommand(argv):
-    """Prepend 'flash' when argv carries no subcommand (option values don't count)."""
+    """Prepend 'flash' when argv carries no subcommand (option values don't count).
+    A help request stays top-level so the subcommand list is what gets shown."""
+    if "-h" in argv or "--help" in argv:
+        return argv
     expecting_value = False
     for token in argv:
         if expecting_value:
@@ -1130,7 +1150,9 @@ def main(argv=None):
     """Entry point. Returns the process exit code."""
     # Status lines must interleave correctly with the ssh children's output when
     # stdout is a pipe (tee, log files) — a block-buffered stdout prints them late.
-    sys.stdout.reconfigure(line_buffering=True)
+    # (Only real TextIOWrappers have reconfigure; a redirected stdout is left alone.)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     argv = default_subcommand(list(sys.argv[1:] if argv is None else argv))
     args = build_parser().parse_args(argv)
     try:

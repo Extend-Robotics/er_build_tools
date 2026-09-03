@@ -5,8 +5,8 @@ deployment machine in *any* state, and produces a flashed, provisioned,
 sanity-checked QA cortex:
 
 ```
-er_jetson_flash                      # everything, with extend/extend defaults
-er_jetson_flash --username qa --password s3cret
+er_jetson_flash                      # everything; user 'extend', password prompted
+ER_JETSON_PASSWORD=... er_jetson_flash --username qa   # non-interactive
 er_jetson_flash --storage internal   # board has no NVMe — put the rootfs on the eMMC
 er_jetson_flash post-flash           # stage 5 only: board already flashed and booted
 er_jetson_flash verify               # read-only health check of the flash tree
@@ -59,7 +59,9 @@ just takes longer the first time, while the tool walks a guided reinstall.
    anything but GO stops the pipeline.
 4. **Flash**: `sudo ./nvsdkmanager_flash.sh [--storage <dev>] --nv-auto-config
    --username <user>` — first-boot user preseeded (no monitor needed); the password
-   is fed to the preseeder over stdin, never argv. `--storage` chooses where the
+   comes from `--password`, else `$ER_JETSON_PASSWORD`, else an interactive prompt
+   (there is no default: this repo is public), and is fed to the preseeder over
+   stdin, never argv. `--storage` chooses where the
    rootfs goes: the default `nvme0n1p1` puts it on the NVMe SSD (the eMMC then holds
    only a boot partition pointing at it), while `--storage internal` omits the flag so
    the rootfs lands on the on-board eMMC. Use `internal` for boards with **no NVMe

@@ -311,9 +311,9 @@ class CliTest(unittest.TestCase):
         args = ejf.build_parser().parse_args(["flash"])
         self.assertEqual(args.username, "extend")
         # password defaults to None on argv — resolved later from
-        # $ER_JETSON_PASSWORD (preferred: argv is visible in ps) or DEF_PASS
+        # $ER_JETSON_PASSWORD (preferred: argv is visible in ps) or an interactive prompt
         self.assertIsNone(args.password)
-        self.assertEqual(ejf.DEF_PASS, "extend")
+        self.assertFalse(hasattr(ejf, "DEF_PASS"), "no default password may live in a public repo")
         self.assertEqual(args.storage, "nvme0n1p1")
 
     def test_default_subcommand_is_flash(self):
@@ -445,7 +445,8 @@ class StorageSelectionTest(unittest.TestCase):
         # end-to-end wiring: `--storage internal` must reach run_flash as None (eMMC),
         # with every hardware/tree gate stubbed out.
         args = ejf.build_parser().parse_args(["flash", "--storage", "internal", "--skip-post"])
-        with mock.patch.object(ejf, "check_host_tools", return_value=True), \
+        with mock.patch.dict(os.environ, {"ER_JETSON_PASSWORD": "pw"}), \
+                mock.patch.object(ejf, "check_host_tools", return_value=True), \
                 mock.patch.object(ejf, "load_canonical_manifest", return_value=None), \
                 mock.patch.object(ejf, "ensure_tree", return_value=True), \
                 mock.patch.object(ejf, "run_preflight", return_value=ejf.EXIT_OK), \
@@ -837,16 +838,30 @@ class PostFlashSubcommandTest(unittest.TestCase):
 
     def test_runs_post_flash_then_sanity_checks_against_the_usb_host(self):
         args = ejf.build_parser().parse_args(["post-flash", "--username", "qa"])
-        with mock.patch.object(ejf, "check_host_tools", return_value=True), \
+        with mock.patch.dict(os.environ, {"ER_JETSON_PASSWORD": "from-env"}), \
+                mock.patch.object(ejf, "check_host_tools", return_value=True), \
                 mock.patch.object(ejf, "post_flash", return_value=True) as post, \
                 mock.patch.object(ejf, "sanity_checks", return_value=True) as sanity, \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(ejf.cmd_post_flash(args), ejf.EXIT_OK)
-        post.assert_called_once_with("qa@" + ejf.DEF_HOST, ejf.DEF_PASS)
-        sanity.assert_called_once_with("qa@" + ejf.DEF_HOST, ejf.DEF_PASS)
+        post.assert_called_once_with("qa@" + ejf.DEF_HOST, "from-env")
+        sanity.assert_called_once_with("qa@" + ejf.DEF_HOST, "from-env")
+
+    def test_no_password_anywhere_fails_before_touching_the_board(self):
+        args = ejf.build_parser().parse_args(["post-flash"])
+        env = {key: value for key, value in os.environ.items() if key != "ER_JETSON_PASSWORD"}
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: False)), \
+                mock.patch.object(ejf, "check_host_tools", return_value=True), \
+                mock.patch.object(ejf, "post_flash") as post, \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(ejf.cmd_post_flash(args), ejf.EXIT_FAILURE)
+        post.assert_not_called()
+        self.assertIn("ER_JETSON_PASSWORD", out.getvalue())
 
     def test_post_flash_failure_skips_sanity_and_fails(self):
-        args = ejf.build_parser().parse_args(["post-flash"])
+        args = ejf.build_parser().parse_args(["post-flash", "--password", "pw"])
         with mock.patch.object(ejf, "check_host_tools", return_value=True), \
                 mock.patch.object(ejf, "post_flash", return_value=False), \
                 mock.patch.object(ejf, "sanity_checks") as sanity, \
@@ -869,6 +884,53 @@ class LineBufferedOutputTest(unittest.TestCase):
                 mock.patch.object(ejf, "cmd_verify", return_value=ejf.EXIT_OK):
             self.assertEqual(ejf.main(["verify"]), ejf.EXIT_OK)
         fake_stdout.reconfigure.assert_called_once_with(line_buffering=True)
+
+
+def post_flash_args(*argv):
+    return ejf.build_parser().parse_args(["post-flash"] + list(argv))
+
+
+def env_without_password():
+    env = {key: value for key, value in os.environ.items() if key != "ER_JETSON_PASSWORD"}
+    return mock.patch.dict(os.environ, env, clear=True)
+
+
+class ResolvePasswordTest(unittest.TestCase):
+    """The Jetson password comes from --password, else $ER_JETSON_PASSWORD, else a prompt — never a default."""
+
+    def test_argv_wins_over_env(self):
+        with mock.patch.dict(os.environ, {"ER_JETSON_PASSWORD": "from-env"}):
+            self.assertEqual(ejf.resolve_password(post_flash_args("--password", "from-argv")), "from-argv")
+
+    def test_env_when_argv_absent(self):
+        with mock.patch.dict(os.environ, {"ER_JETSON_PASSWORD": "from-env"}):
+            self.assertEqual(ejf.resolve_password(post_flash_args()), "from-env")
+
+    def test_interactive_prompt_when_neither_and_stdin_is_a_tty(self):
+        with env_without_password(), mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: True)), \
+                mock.patch.object(ejf.getpass, "getpass", return_value="typed") as prompt:
+            self.assertEqual(ejf.resolve_password(post_flash_args("--username", "qa")), "typed")
+        self.assertIn("qa", prompt.call_args[0][0])
+
+    def test_none_when_neither_and_no_tty(self):
+        with env_without_password(), mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: False)), \
+                mock.patch.object(ejf.getpass, "getpass") as prompt:
+            self.assertIsNone(ejf.resolve_password(post_flash_args()))
+        prompt.assert_not_called()
+
+
+class TopLevelHelpTest(unittest.TestCase):
+    """`er_jetson_flash -h` must show the subcommand list, not the flash subparser's help."""
+
+    def test_help_flags_are_not_routed_to_the_default_subcommand(self):
+        self.assertEqual(ejf.default_subcommand(["-h"]), ["-h"])
+        self.assertEqual(ejf.default_subcommand(["--help"]), ["--help"])
+
+    def test_top_level_help_lists_post_flash(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            ejf.main(["-h"])
+        self.assertIn("post-flash", out.getvalue())
 
 
 if __name__ == "__main__":
