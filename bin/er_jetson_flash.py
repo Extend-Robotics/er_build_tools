@@ -99,7 +99,10 @@ DEF_HOST = "192.168.55.1"
 USB_PID_RECOVERY = "7023"
 USB_PID_BOOTED = "7020"
 
-SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+# LogLevel=ERROR: with a throwaway known_hosts file ssh would otherwise print
+# "Warning: Permanently added ..." on every connection, and remote_run merges
+# stderr into the output the sanity checks parse.
+SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
             "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]
 
 BOOT_TIMEOUT_S = 300

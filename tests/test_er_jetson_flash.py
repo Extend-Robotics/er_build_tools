@@ -933,5 +933,17 @@ class TopLevelHelpTest(unittest.TestCase):
         self.assertIn("post-flash", out.getvalue())
 
 
+class SshCommandTest(unittest.TestCase):
+    """remote_run merges ssh's stderr into stdout, so ssh must not chat: with a throwaway
+    known_hosts file every connection would otherwise print 'Warning: Permanently added ...',
+    which the sanity checks then read as the command's output."""
+
+    def test_ssh_is_silenced_to_errors_only(self):
+        argv = ejf.ssh_cmd("qa@192.0.2.1")
+        self.assertIn("LogLevel=ERROR", argv)
+        self.assertEqual(argv[:3], ["sshpass", "-e", "ssh"])
+        self.assertEqual(argv[-1], "qa@192.0.2.1")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
