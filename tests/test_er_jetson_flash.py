@@ -182,13 +182,54 @@ class AptProxyConfTest(unittest.TestCase):
         self.assertIn('Acquire::https::Proxy "http://127.0.0.1:12345";', conf)
 
 
-class AptInstallJetpackTest(unittest.TestCase):
-    """fix_clock's jump fires the Persistent apt-daily timers, whose apt-get
-    steals the apt locks (seen in the field: 'Could not get lock
-    /var/lib/apt/lists/lock'). apt_install_jetpack must stop the timers first
-    and make every apt-get wait on the locks instead of failing."""
+class QuietAptDailyTest(unittest.TestCase):
+    """fix_clock's jump fires the Persistent apt-daily timers; their apt-get takes
+    /var/lib/apt/lists/lock, which apt-get update cannot wait for. Stopping the
+    timers alone is not enough — a service already started keeps running — so both
+    the timers and the services are stopped, before the clock jump."""
 
-    def test_stops_timers_then_apt_waits_on_locks(self):
+    def test_stops_timers_and_services(self):
+        commands = []
+
+        def fake_remote_run(_target, _password, command, **_kwargs):
+            commands.append(command)
+            return mock.Mock(returncode=0, stdout="")
+
+        with mock.patch.object(ejf, "remote_run", side_effect=fake_remote_run):
+            ejf.quiet_apt_daily("192.0.2.1", "pw")
+        self.assertEqual(len(commands), 1)
+        for unit in ("apt-daily.timer", "apt-daily-upgrade.timer", "apt-daily.service", "apt-daily-upgrade.service"):
+            self.assertIn(unit, commands[0])
+        self.assertTrue(commands[0].startswith("systemctl stop "))
+
+    def test_failure_warns_but_does_not_raise(self):
+        out = io.StringIO()
+        with mock.patch.object(ejf, "remote_run", return_value=mock.Mock(returncode=1, stdout="nope")), \
+                contextlib.redirect_stdout(out):
+            ejf.quiet_apt_daily("192.0.2.1", "pw")
+        self.assertIn("WARN", out.getvalue())
+
+
+class PostFlashOrderTest(unittest.TestCase):
+    """post_flash must quiet apt-daily BEFORE fix_clock — the clock jump is what fires the timers."""
+
+    def test_apt_daily_quieted_before_clock_jump(self):
+        order = []
+        with mock.patch.object(ejf, "wait_for", return_value=True), \
+                mock.patch.object(ejf, "remote_run", return_value=mock.Mock(returncode=0, stdout="SSH_OK")), \
+                mock.patch.object(ejf, "quiet_apt_daily", side_effect=lambda *_: order.append("quiet")), \
+                mock.patch.object(ejf, "fix_clock", side_effect=lambda *_: order.append("clock")), \
+                mock.patch.object(ejf, "jetson_has_internet", return_value=True), \
+                mock.patch.object(ejf, "apt_install_jetpack", side_effect=lambda *_: order.append("apt") or True), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(ejf.post_flash("extend@192.0.2.1", "pw"))
+        self.assertEqual(order, ["quiet", "clock", "apt"])
+
+
+class AptInstallJetpackTest(unittest.TestCase):
+    """apt_install_jetpack: update then install, both waiting on the dpkg lock; no unit juggling here."""
+
+    def test_update_then_install_waiting_on_dpkg_lock(self):
         commands = []
 
         def fake_remote_run(_target, _password, command, **_kwargs):
@@ -198,22 +239,12 @@ class AptInstallJetpackTest(unittest.TestCase):
         with mock.patch.object(ejf, "remote_run", side_effect=fake_remote_run):
             self.assertTrue(ejf.apt_install_jetpack("192.0.2.1", "pw"))
 
-        self.assertIn("systemctl stop apt-daily.timer apt-daily-upgrade.timer",
-                      commands[0])
-        apt_cmds = [c for c in commands if "apt-get" in c]
-        self.assertEqual(len(apt_cmds), 2)
-        for cmd in apt_cmds:
+        self.assertEqual(len(commands), 2)
+        self.assertNotIn("systemctl", " ".join(commands))
+        for cmd in commands:
             self.assertIn("-o DPkg::Lock::Timeout={}".format(ejf.APT_LOCK_WAIT_S), cmd)
-        self.assertTrue(apt_cmds[0].endswith(" update"))
-        self.assertIn("install -y nvidia-jetpack", apt_cmds[1])
-
-    def test_timer_stop_failure_does_not_abort(self):
-        def fake_remote_run(_target, _password, command, **_kwargs):
-            returncode = 1 if "systemctl" in command else 0
-            return mock.Mock(returncode=returncode, stdout="")
-
-        with mock.patch.object(ejf, "remote_run", side_effect=fake_remote_run):
-            self.assertTrue(ejf.apt_install_jetpack("192.0.2.1", "pw"))
+        self.assertTrue(commands[0].endswith(" update"))
+        self.assertIn("install -y nvidia-jetpack", commands[1])
 
 
 class ProxySmokeTest(unittest.TestCase):

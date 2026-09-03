@@ -106,8 +106,11 @@ SSH_TIMEOUT_S = 240
 APT_PROXY_CONF = "/etc/apt/apt.conf.d/99er-usb-proxy"
 # fix_clock() jumps the fresh flash's clock forward by years, which makes
 # systemd's Persistent=true apt-daily timers fire their "missed" runs at once —
-# their apt-get then holds the apt locks exactly when we need them. We stop the
-# timers for this boot and let our own apt-get wait out any run already started.
+# their apt-get then holds /var/lib/apt/lists/lock, which `apt-get update`
+# cannot wait for (DPkg::Lock::Timeout only covers the dpkg frontend lock). So
+# the timers AND their services are stopped before the clock jump; the dpkg lock
+# wait below still guards the install against anything else holding dpkg.
+APT_DAILY_UNITS = "apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service"
 APT_LOCK_WAIT_S = 600
 
 USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -876,12 +879,16 @@ def fix_clock(target, password):
         warn("could not set the Jetson clock — apt may reject Release files")
 
 
+def quiet_apt_daily(target, password):
+    """Stop the apt-daily timers and any run they already started, for this boot only."""
+    res = remote_run(target, password, "systemctl stop " + APT_DAILY_UNITS, sudo=True)
+    if res.returncode != 0:
+        warn("could not stop the apt-daily units — apt-get update may collide with them:\n{}".format(
+            (res.stdout or "").strip()[-500:]))
+
+
 def apt_install_jetpack(target, password):
     """apt update + install nvidia-jetpack on the Jetson, streaming output."""
-    res = remote_run(target, password,
-                     "systemctl stop apt-daily.timer apt-daily-upgrade.timer", sudo=True)
-    if res.returncode != 0:
-        warn("could not stop apt-daily timers — relying on the apt lock wait")
     apt_get = "apt-get -o DPkg::Lock::Timeout={}".format(APT_LOCK_WAIT_S)
     print("  apt-get update ...")
     res = remote_run(target, password, apt_get + " update", sudo=True)
@@ -951,6 +958,7 @@ def post_flash(target, password):
         bad("ssh login as {} failed — wrong username/password?".format(target))
         return False
     good("ssh login works")
+    quiet_apt_daily(target, password)
     fix_clock(target, password)
 
     if jetson_has_internet(target, password):
