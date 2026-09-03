@@ -395,5 +395,50 @@ class UnpackProgressTest(unittest.TestCase):
         self.assertIn(" 25%", out)
 
 
+class RawUrlBaseTest(unittest.TestCase):
+    """Sibling files are fetched from the commit the helper pinned (ER_BUILD_TOOLS_REF),
+    else the branch ref; raw.githubusercontent serves commit URLs immediately but
+    caches refs/heads/<branch> for minutes and ignores query strings."""
+
+    def test_pinned_commit_wins(self):
+        with mock.patch.dict(os.environ, {"ER_BUILD_TOOLS_REF": "0123456789abcdef0123456789abcdef01234567",
+                                          "ER_BUILD_TOOLS_BRANCH": "some_branch"}):
+            self.assertEqual(ejf.raw_url_base(),
+                             "https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/"
+                             "0123456789abcdef0123456789abcdef01234567")
+
+    def test_branch_ref_without_a_pin(self):
+        env = {key: value for key, value in os.environ.items() if key != "ER_BUILD_TOOLS_REF"}
+        env["ER_BUILD_TOOLS_BRANCH"] = "some_branch"
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(ejf.raw_url_base(),
+                             "https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/some_branch")
+
+    def test_main_when_nothing_is_set(self):
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("ER_BUILD_TOOLS_REF", "ER_BUILD_TOOLS_BRANCH")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertTrue(ejf.raw_url_base().endswith("/refs/heads/main"))
+
+    def test_fetch_url_has_no_nocache_query(self):
+        recorded = []
+
+        def fake_run(argv, **_kwargs):
+            recorded.append(argv)
+            with open(argv[argv.index("-o") + 1], "w", encoding="utf-8") as handle:
+                handle.write("{}")
+            return mock.Mock(returncode=0)
+
+        with mock.patch.dict(os.environ, {"ER_BUILD_TOOLS_REF": "0123456789abcdef0123456789abcdef01234567"}), \
+                mock.patch.object(ejf.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(ejf.os.path, "isfile", return_value=False):
+            path, is_temp = ejf.locate_repo_file(ejf.MANIFEST_REL, ".json")
+        self.assertTrue(is_temp)
+        os.unlink(path)
+        url = [tok for tok in recorded[0] if tok.startswith("http")][0]
+        self.assertEqual(url, "https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/"
+                              "0123456789abcdef0123456789abcdef01234567/" + ejf.MANIFEST_REL)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,7 @@ Color_Off='\033[0m'       # Text Reset
 
 CATKIN_WS_PATH="/cortex/.catkin_ws"
 THIS_SCRIPT_BRANCH="main"
-THIS_SCRIPT_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/.helper_bash_functions"
+ER_BUILD_TOOLS_REPO="Extend-Robotics/er_build_tools"
 # ROS helpers
 export ROSCONSOLE_FORMAT='[${severity}](${node}): [${time}] ${message}'
 colcon_build() {
@@ -168,7 +168,24 @@ kill_any_process() { ps_aux_command $1; conf="$(confirm "kill these processes? [
 docker_exec () { if [[ $(docker container ls -q | wc -l) -eq 1 ]]; then docker exec -it $(docker container ls -q) bash; else echo "wrong number of containers running"; fi; }
 awk_line_length() { if [[ -z $2 ]]; then MAX_LINE_LENGTH=200; else MAX_LINE_LENGTH=$2; fi; cat $1 | awk 'length($0) < '"$MAX_LINE_LENGTH"''; }
 
-MERGE_VARS_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/bin/merge_helper_vars.py"
+_er_build_tools_ref() {
+    # raw.githubusercontent caches refs/heads/<branch> URLs for ~5 minutes and
+    # ignores query strings, so a just-pushed change is invisible for that long.
+    # Commit URLs are served immediately: resolve the branch head via the API
+    # (60 s cache, 60 unauthenticated calls/hour). Falls back to the branch ref,
+    # saying so, when the API cannot be reached or answers with a non-sha body.
+    local sha
+    sha="$(curl -fsSL --max-time 10 -H "Accept: application/vnd.github.sha" \
+           "https://api.github.com/repos/${ER_BUILD_TOOLS_REPO}/commits/${THIS_SCRIPT_BRANCH}" 2>/dev/null)"
+    if [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "$sha"
+        return 0
+    fi
+    echo "WARN: could not resolve branch ${THIS_SCRIPT_BRANCH} to a commit via api.github.com; fetching refs/heads/${THIS_SCRIPT_BRANCH} instead (may lag a push by up to 5 min)" >&2
+    echo "refs/heads/${THIS_SCRIPT_BRANCH}"
+}
+_er_build_tools_raw_url() { echo "https://raw.githubusercontent.com/${ER_BUILD_TOOLS_REPO}/$1/$2"; }  # $1=ref $2=repo path
+
 update_helper_bash_functions() {
     if [ ! -f ~/.helper_bash_functions ]; then
         echo -e "${Red}ERROR: Tried to replace this file but couldn't find it, something has gone wrong!${Color_Off}\n"
@@ -180,16 +197,17 @@ update_helper_bash_functions() {
     fi
     check_find_python_files
 
-    local tmp_new
+    local ref tmp_new
+    ref="$(_er_build_tools_ref)"
     tmp_new=$(mktemp)
-    if ! wget -q -O "${tmp_new}" "${THIS_SCRIPT_URL}"; then
+    if ! wget -q -O "${tmp_new}" "$(_er_build_tools_raw_url "$ref" .helper_bash_functions)"; then
         echo -e "${Red}Error: Failed to download updated helper_bash_functions${Color_Off}"
         rm -f "${tmp_new}"
         return 1
     fi
 
     local merge_script
-    merge_script=$(curl -fSL "${MERGE_VARS_URL}") || {
+    merge_script=$(curl -fSL "$(_er_build_tools_raw_url "$ref" bin/merge_helper_vars.py)") || {
         echo -e "${Red}Error: Failed to fetch merge_helper_vars.py${Color_Off}"
         rm -f "${tmp_new}"
         return 1
@@ -213,27 +231,26 @@ _fetch_and_call_remote_script_with() {
     # Temp file rather than piping curl into the interpreter: the script keeps the
     # terminal on stdin (interactive ssh prompts work), and the fetch's success is
     # checked before anything executes — a truncated stream can never half-run.
-    local interpreter="$1" script_rel_path="$2" script_path exit_code
+    local interpreter="$1" script_rel_path="$2" ref script_path exit_code
     shift 2
     if [ -z "${THIS_SCRIPT_BRANCH:-}" ]; then
         echo "ERROR: THIS_SCRIPT_BRANCH is unset; cannot determine which branch to fetch" >&2
         return 1
     fi
+    ref="$(_er_build_tools_ref)"
     script_path="$(mktemp "${TMPDIR:-/tmp}/er_fetch.XXXXXXXXXX")" || return 1
-    # ?nocache= busts raw.githubusercontent's ~5-minute CDN cache, which can
-    # otherwise serve a just-superseded revision shortly after a push.
-    if ! curl -fsSL "https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${THIS_SCRIPT_BRANCH}/${script_rel_path}?nocache=$$-${RANDOM}" -o "$script_path"; then
-        echo "ERROR: failed to fetch ${script_rel_path} (branch ${THIS_SCRIPT_BRANCH})" >&2
+    if ! curl -fsSL "$(_er_build_tools_raw_url "$ref" "$script_rel_path")" -o "$script_path"; then
+        echo "ERROR: failed to fetch ${script_rel_path} (branch ${THIS_SCRIPT_BRANCH}, ref ${ref})" >&2
         rm -f "$script_path"
         return 1
     fi
     # Subshell so cleanup runs even when Ctrl-C aborts this function mid-child:
     # the interactive shell stops executing the function at that point, but the
-    # subshell still runs its EXIT trap. The branch export keeps any sibling-file
-    # fetches done by the script on the same branch.
+    # subshell still runs its EXIT trap. The exports keep any sibling-file
+    # fetches done by the script on the very same commit.
     (
         trap 'rm -f "$script_path"' EXIT
-        ER_BUILD_TOOLS_BRANCH="${THIS_SCRIPT_BRANCH}" "$interpreter" "$script_path" "$@"
+        ER_BUILD_TOOLS_BRANCH="${THIS_SCRIPT_BRANCH}" ER_BUILD_TOOLS_REF="${ref}" "$interpreter" "$script_path" "$@"
     )
     exit_code=$?
     rm -f "$script_path"
