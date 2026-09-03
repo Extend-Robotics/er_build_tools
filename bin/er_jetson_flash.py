@@ -126,6 +126,7 @@ APT_PROXY_CONF = "/etc/apt/apt.conf.d/99er-usb-proxy"
 # wait below still guards the install against anything else holding dpkg.
 APT_DAILY_UNITS = "apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service"
 APT_LOCK_WAIT_S = 600
+ETC_HOSTS = "/etc/hosts"
 
 USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 RED = "\033[0;31m" if USE_COLOR else ""
@@ -955,12 +956,17 @@ def sanity_checks(target, password):
 
 
 def set_hostname(target, password, hostname):
-    """Set the board's hostname (hostnamectl + the 127.0.1.1 line in /etc/hosts) and read it back."""
-    hosts_line = "127.0.1.1\t{}".format(hostname)
-    command = ("hostnamectl set-hostname {h} && "
-               "if grep -q '^127\\.0\\.1\\.1' /etc/hosts; then sed -i 's/^127\\.0\\.1\\.1.*/{line}/' /etc/hosts; "
-               "else printf '%s\\n' '{line}' >> /etc/hosts; fi").format(h=hostname, line=hosts_line)
-    res = remote_run(target, password, command, sudo=True)
+    """Set the board's hostname (hostnamectl + the 127.0.1.1 line in /etc/hosts) and read it back.
+
+    One `sh -c` so the whole edit runs under the single sudo that remote_run
+    prefixes; the remote shell would otherwise run everything after the first &&
+    unprivileged. hostname is a validated DNS label, so it needs no quoting.
+    """
+    script = ('hostnamectl set-hostname {h} && '
+              'if grep -q "^127\\.0\\.1\\.1[[:space:]]" {hosts}; '
+              'then sed -i "s/^127\\.0\\.1\\.1[[:space:]].*/127.0.1.1 {h}/" {hosts}; '
+              'else echo "127.0.1.1 {h}" >> {hosts}; fi').format(h=hostname, hosts=ETC_HOSTS)
+    res = remote_run(target, password, "sh -c '{}'".format(script), sudo=True)
     if res.returncode != 0:
         bad("setting hostname failed:\n{}".format((res.stdout or "").strip()[-500:]))
         return False

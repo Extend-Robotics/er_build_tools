@@ -676,6 +676,74 @@ class SetHostnameTest(unittest.TestCase):
         self.assertFalse(result)
         self.assertIn("FAIL", out)
 
+    def test_whole_edit_runs_under_one_sudo(self):
+        # remote_run only prefixes `sudo -S -p ''`; the remote shell parses && and if
+        # OUTSIDE it, so a compound command must be wrapped in a single sh -c '...'
+        _, commands, _ = run_set_hostname(read_back="qa-cortex-3")
+        sudo_command = commands[0]
+        self.assertTrue(sudo_command.startswith("sh -c '"), sudo_command)
+        self.assertTrue(sudo_command.endswith("'"), sudo_command)
+        self.assertNotIn("'", sudo_command[len("sh -c '"):-1], "an inner single quote would end the sh -c script early")
+
+
+class SetHostnameShellTest(unittest.TestCase):
+    """The exact strings set_hostname sends, executed by a real shell the way the
+    board's login shell would (ssh replaced by `bash -c`; sudo/hostnamectl/hostname
+    are PATH shims; /etc/hosts is a temp file)."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root)
+        self.hosts = os.path.join(self.root, "hosts")
+        self.log = os.path.join(self.root, "calls.log")
+        shims = os.path.join(self.root, "shims")
+        os.mkdir(shims)
+        self.write_shim(shims, "sudo", '#!/bin/bash\nwhile [ "$1" = "-S" ] || [ "$1" = "-p" ]; do [ "$1" = "-p" ] && shift; shift; done\n'
+                        'echo "sudo: $*" >> "$CALLS_LOG"; exec "$@"\n')
+        self.write_shim(shims, "hostnamectl", '#!/bin/bash\necho "hostnamectl $*" >> "$CALLS_LOG"; echo "$2" > "$CALLS_LOG.name"\n')
+        self.write_shim(shims, "hostname", '#!/bin/bash\ncat "$CALLS_LOG.name" 2>/dev/null || echo ubuntu\n')
+        self.env = dict(os.environ, PATH=shims + os.pathsep + os.environ["PATH"], CALLS_LOG=self.log)
+
+    @staticmethod
+    def write_shim(directory, name, body):
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        os.chmod(path, 0o755)
+
+    def run_set(self, hosts_content):
+        with open(self.hosts, "w", encoding="utf-8") as handle:
+            handle.write(hosts_content)
+        out = io.StringIO()
+        with mock.patch.object(ejf, "ssh_cmd", return_value=["bash", "-c"]), \
+                mock.patch.object(ejf, "ETC_HOSTS", self.hosts), \
+                mock.patch.dict(os.environ, self.env), contextlib.redirect_stdout(out):
+            result = ejf.set_hostname("extend@192.0.2.1", "pw", "qa-cortex-3")
+        with open(self.hosts, encoding="utf-8") as handle:
+            hosts = handle.read()
+        with open(self.log, encoding="utf-8") as handle:
+            calls = handle.read()
+        return result, hosts, calls, out.getvalue()
+
+    def test_replaces_the_existing_127_0_1_1_line(self):
+        result, hosts, calls, _ = self.run_set("127.0.0.1\tlocalhost\n127.0.1.1\tubuntu\n::1\tlocalhost ip6-localhost\n")
+        self.assertTrue(result)
+        self.assertEqual(hosts, "127.0.0.1\tlocalhost\n127.0.1.1 qa-cortex-3\n::1\tlocalhost ip6-localhost\n")
+        self.assertIn("hostnamectl set-hostname qa-cortex-3", calls)
+        self.assertIn("sudo: sh -c", calls)
+
+    def test_appends_when_there_is_no_127_0_1_1_line(self):
+        result, hosts, _, _ = self.run_set("127.0.0.1\tlocalhost\n")
+        self.assertTrue(result)
+        self.assertEqual(hosts, "127.0.0.1\tlocalhost\n127.0.1.1 qa-cortex-3\n")
+
+    def test_edit_happens_inside_sudo(self):
+        _, _, calls, _ = self.run_set("127.0.1.1\tubuntu\n")
+        sudo_lines = [line for line in calls.splitlines() if line.startswith("sudo: ")]
+        self.assertEqual(len(sudo_lines), 1)
+        self.assertIn("sh -c", sudo_lines[0])
+        self.assertIn(self.hosts, sudo_lines[0])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
