@@ -126,9 +126,12 @@ re-patch and a hand-held flash. This tool makes that whole loop one command.
 
 ## Env overrides
 
-- `ER_BUILD_TOOLS_BRANCH` — branch the preflight script and canonical manifest
-  are fetched from when not running from a repo checkout (set automatically by
-  the `er_jetson_flash` helper function)
+- `ER_BUILD_TOOLS_REF` / `ER_BUILD_TOOLS_BRANCH` — commit (preferred) or branch
+  the preflight script and canonical manifest are fetched from when not running
+  from a repo checkout. The `er_jetson_flash` helper resolves its branch to the
+  head commit via the GitHub API and sets both, so everything a run fetches comes
+  from one revision and a fresh push is picked up immediately (raw branch URLs
+  are CDN-cached for ~5 minutes)
 - `--l4t`, `--manifest` — non-default tree / manifest locations
 - `--storage` — rootfs location: `nvme` (default, = `nvme0n1p1`) for an NVMe SSD, or
   `internal`/`emmc` for the on-board eMMC on boards with no NVMe fitted; also accepts a

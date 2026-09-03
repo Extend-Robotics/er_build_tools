@@ -12,6 +12,7 @@
 #             host also Linux_for_Tegra/README-LOCAL-PATCH.md
 # Env overrides: L4T, COMPANION, JETSON_SSH (user@host), JETSON_PASS, NO_COLOR,
 #                ER_BUILD_TOOLS_BRANCH (branch the companion is fetched from when absent)
+#                ER_BUILD_TOOLS_REF    (commit to fetch it from instead; set by the helpers)
 #
 # Detection method per state:
 #   - flash initrd : run companion check over the USB link, root/root (definitive)
@@ -35,7 +36,9 @@ DEF_HOST="192.168.55.1"
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5
           -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 REAPPLY_CMD="cp -n '$XML' '$XML.orig' && sed -i 's/$STOCK_VAL/$PATCH_VAL/' '$XML'"
-RAW_URL_BASE="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${ER_BUILD_TOOLS_BRANCH:-main}"
+# ER_BUILD_TOOLS_REF (a commit, set by the er_jetson_flash* helpers) pins the companion to the
+# same revision as this script; raw.githubusercontent caches branch refs for ~5 min.
+RAW_URL_BASE="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/${ER_BUILD_TOOLS_REF:-refs/heads/${ER_BUILD_TOOLS_BRANCH:-main}}"
 COMPANION_TMP=""
 trap 'rm -f "$COMPANION_TMP"' EXIT
 
@@ -115,8 +118,7 @@ companion_via() {               # $@ = ssh command opening a shell on the target
 ensure_companion() {
     companion_ok && return 0
     COMPANION_TMP=$(mktemp "${TMPDIR:-/tmp}/er_companion.XXXXXXXXXX") || { warn "mktemp failed — cannot fetch companion"; return 1; }
-    # ?nocache= busts raw.githubusercontent's ~5-minute CDN cache (stale-revision guard).
-    if curl -fsSL --max-time 30 "$RAW_URL_BASE/bin/check-emmc-pcn.sh?nocache=$$-${RANDOM}" -o "$COMPANION_TMP"; then
+    if curl -fsSL --max-time 30 "$RAW_URL_BASE/bin/check-emmc-pcn.sh" -o "$COMPANION_TMP"; then
         COMPANION="$COMPANION_TMP"
         return 0
     fi

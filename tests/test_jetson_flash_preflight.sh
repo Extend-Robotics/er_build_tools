@@ -75,9 +75,14 @@ EOF
 cat > "$shims/curl" <<'EOF'
 #!/bin/bash
 # ensure_companion fetch: honour -o <file>; FAKE_CURL_BODY or fail (exit 22).
+# The URL is appended to $CURL_URLS_LOG when set.
 out=""
 prev=""
-for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+for a in "$@"; do
+  [ "$prev" = "-o" ] && out="$a"
+  case "$a" in http*) [ -n "${CURL_URLS_LOG:-}" ] && printf '%s\n' "$a" >> "$CURL_URLS_LOG" ;; esac
+  prev="$a"
+done
 if [ -n "${FAKE_CURL_BODY:-}" ] && [ -n "$out" ]; then
   printf '%s\n' "$FAKE_CURL_BODY" > "$out"
   exit 0
@@ -225,8 +230,21 @@ assert_contains "companion says UNKNOWN" "$out" "UNKNOWN"
 helper_curl="$base_tmp/helper_shims"; mkdir -p "$helper_curl"
 cat > "$helper_curl/curl" <<'EOF'
 #!/bin/bash
-out=""; prev=""
-for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+# Two callers: the branch->commit API lookup (no -o, api.github.com; answers
+# FAKE_SHA or fails when FAKE_SHA=fail) and the raw script fetch (-o <file>;
+# FAKE_FETCH body or fail). Every raw URL is appended to $CURL_URLS_LOG.
+out=""; prev=""; url=""
+for a in "$@"; do
+  [ "$prev" = "-o" ] && out="$a"
+  case "$a" in http*) url="$a" ;; esac
+  prev="$a"
+done
+case "$url" in
+  *api.github.com*)
+    [ "${FAKE_SHA:-}" = "fail" ] && exit 22
+    printf '%s' "${FAKE_SHA:-1111111111111111111111111111111111111111}"; exit 0 ;;
+esac
+[ -n "${CURL_URLS_LOG:-}" ] && printf '%s\n' "$url" >> "$CURL_URLS_LOG"
 [ "${FAKE_FETCH:-}" = "fail" ] && exit 22
 printf '%s\n' "$FAKE_FETCH" > "$out"
 EOF
@@ -276,6 +294,52 @@ out=$(PATH="$helper_curl:$PATH" FAKE_FETCH=fail \
       bash -c "source '$HELPERS'; er_jetson_flash; echo rc=\$?" 2>&1)
 assert_contains "python wrapper fetch failure msg" "$out" "ERROR: failed to fetch"
 assert_contains "python wrapper fetch failure rc" "$out" "rc=1"
+
+# ---------- 7c. fetch by commit SHA (raw.githubusercontent caches refs/heads/<branch> ~5 min) ----------
+
+sha="0123456789abcdef0123456789abcdef01234567"
+urls="$base_tmp/urls.log"; : > "$urls"
+out=$(PATH="$helper_curl:$PATH" CURL_URLS_LOG="$urls" FAKE_SHA="$sha" \
+      FAKE_FETCH='echo "ref=${ER_BUILD_TOOLS_REF:-unset} branch=${ER_BUILD_TOOLS_BRANCH:-unset}"' \
+      bash -c "source '$HELPERS'; er_jetson_flash_preflight" 2>&1)
+assert_contains "script fetched by commit sha" "$(cat "$urls")" "/er_build_tools/$sha/bin/jetson-flash-preflight.sh"
+assert_not_contains "no refs/heads when the sha resolved" "$(cat "$urls")" "refs/heads"
+assert_not_contains "no ?nocache= (the CDN ignores it)" "$(cat "$urls")" "nocache"
+assert_contains "child sees the pinned commit" "$out" "ref=$sha branch=main"
+
+# API unreachable -> say so, fall back to the branch ref (previous behaviour)
+: > "$urls"
+out=$(PATH="$helper_curl:$PATH" CURL_URLS_LOG="$urls" FAKE_SHA=fail FAKE_FETCH='echo "ref=${ER_BUILD_TOOLS_REF:-unset}"' \
+      bash -c "source '$HELPERS'; er_jetson_flash_preflight" 2>&1)
+assert_contains "api failure is announced" "$out" "WARN"
+assert_contains "api failure falls back to the branch ref" "$(cat "$urls")" "/er_build_tools/refs/heads/main/bin/jetson-flash-preflight.sh"
+assert_contains "child sees the branch ref on fallback" "$out" "ref=refs/heads/main"
+
+# API answered with something that is not a sha (error body, HTML) -> same fallback
+: > "$urls"
+out=$(PATH="$helper_curl:$PATH" CURL_URLS_LOG="$urls" FAKE_SHA='{"message":"Not Found"}' FAKE_FETCH='exit 0' \
+      bash -c "source '$HELPERS'; er_jetson_flash_preflight" 2>&1)
+assert_contains "non-sha api body is announced" "$out" "WARN"
+assert_contains "non-sha api body falls back to the branch ref" "$(cat "$urls")" "refs/heads/main"
+
+# python payloads pin the same commit
+: > "$urls"
+out=$(PATH="$helper_curl:$PATH" CURL_URLS_LOG="$urls" FAKE_SHA="$sha" \
+      FAKE_FETCH='import os; print("ref=" + os.environ.get("ER_BUILD_TOOLS_REF", "unset"))' \
+      bash -c "source '$HELPERS'; er_jetson_flash" 2>&1)
+assert_contains "python payload fetched by commit sha" "$(cat "$urls")" "/er_build_tools/$sha/bin/er_jetson_flash.py"
+assert_contains "python child sees the pinned commit" "$out" "ref=$sha"
+
+# the preflight's own companion fetch follows ER_BUILD_TOOLS_REF when set
+comp_urls="$base_tmp/comp_urls.log"; : > "$comp_urls"
+FAKE_LSUSB_LINE="$LSUSB_INITRD" CURL_URLS_LOG="$comp_urls" ER_BUILD_TOOLS_REF="$sha" FAKE_CURL_BODY="$(cat "$comp_post")" \
+  run_preflight "$l4t_post_stock" "$base_tmp/absent-companion" >/dev/null 2>&1
+assert_contains "companion fetched from the pinned commit" "$(cat "$comp_urls")" "/er_build_tools/$sha/bin/check-emmc-pcn.sh"
+: > "$comp_urls"
+FAKE_LSUSB_LINE="$LSUSB_INITRD" CURL_URLS_LOG="$comp_urls" FAKE_CURL_BODY="$(cat "$comp_post")" \
+  run_preflight "$l4t_post_stock" "$base_tmp/absent-companion" >/dev/null 2>&1
+assert_contains "companion falls back to refs/heads/main without a ref" "$(cat "$comp_urls")" "refs/heads/main/bin/check-emmc-pcn.sh"
+assert_not_contains "companion fetch has no ?nocache=" "$(cat "$comp_urls")" "nocache"
 
 # ---------- 8. review regressions: fabricated verdicts + half-edited XML ----------
 

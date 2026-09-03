@@ -22,9 +22,10 @@ or, with `.helper_bash_functions` installed:
 The one-liner is for eyeball runs only: if the network fails, `bash <(curl -Ls …)`
 executes nothing and exits **0**, which reads as GO. Anything automated must use
 `er_jetson_flash_preflight` — it verifies the fetch before running and returns
-non-zero when the fetch fails. Helper fetches are also cache-busted, so every
-run executes the current branch tip (raw.githubusercontent otherwise serves a
-CDN copy for up to ~5 minutes after a push).
+non-zero when the fetch fails. The helpers also resolve the branch to its head
+commit via the GitHub API and fetch by commit, so every run executes the current
+branch tip; a plain `refs/heads/<branch>` raw URL is served from a CDN copy for up
+to ~5 minutes after a push, and `?nocache=` query strings do not bust it.
 
 ## What it checks
 
@@ -63,7 +64,8 @@ absent. It also works standalone on any booted Jetson:
 | `COMPANION` | `~/check-emmc-pcn.sh` | local companion path (auto-fetched when absent) |
 | `JETSON_SSH` | `extend@192.168.55.1` | ssh target for the booted-L4T check |
 | `JETSON_PASS` | *(unset)* | ssh password, enables the non-interactive booted-L4T check |
-| `ER_BUILD_TOOLS_BRANCH` | `main` | branch the companion is fetched from (honoured for direct/curl-bash runs; `er_jetson_flash_preflight` deliberately pins it to the helper's own branch for coherence) |
+| `ER_BUILD_TOOLS_REF` | *(unset)* | commit the companion is fetched from; set by the helpers so the companion matches the script exactly |
+| `ER_BUILD_TOOLS_BRANCH` | `main` | branch the companion is fetched from when `ER_BUILD_TOOLS_REF` is unset (honoured for direct/curl-bash runs; `er_jetson_flash_preflight` deliberately pins it to the helper's own branch for coherence) |
 | `NO_COLOR` | *(unset)* | disable colours |
 
 ## Verdicts and exit codes

@@ -66,8 +66,17 @@ MANIFEST_GLOBS = ("*.conf", "*.conf.common", "flash.sh", "nvsdkmanager_flash.sh"
                   os.path.join("tools", "kernel_flash", "*.sh"),
                   os.path.join("tools", "kernel_flash", "*.xml"))
 
-RAW_URL_BASE = ("https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/"
-                + os.environ.get("ER_BUILD_TOOLS_BRANCH", "main"))
+RAW_REPO_URL = "https://raw.githubusercontent.com/Extend-Robotics/er_build_tools"
+
+
+def raw_url_base():
+    """Where sibling repo files are fetched from: the commit the helper pinned
+    (ER_BUILD_TOOLS_REF), else the branch ref. raw.githubusercontent serves commit
+    URLs immediately but caches refs/heads/<branch> for minutes, query string or not."""
+    ref = os.environ.get("ER_BUILD_TOOLS_REF") or "refs/heads/" + os.environ.get("ER_BUILD_TOOLS_BRANCH", "main")
+    return "{}/{}".format(RAW_REPO_URL, ref)
+
+
 PREFLIGHT_REL = "bin/jetson-flash-preflight.sh"
 MANIFEST_REL = "bin/er_jetson_flash_manifest.json"
 
@@ -333,7 +342,7 @@ def locate_repo_file(rel_path, suffix):
     The sibling shortcut only applies when this script actually runs from a repo
     checkout (parent dir has the repo's .helper_bash_functions). When fetched to
     ${TMPDIR} by the er_jetson_flash wrapper, a same-named file in the
-    world-writable temp dir must NOT shadow the pinned, cache-busted GitHub fetch.
+    world-writable temp dir must NOT shadow the fetch pinned to the same commit.
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     in_repo_checkout = os.path.isfile(os.path.join(script_dir, os.pardir, ".helper_bash_functions"))
@@ -342,9 +351,7 @@ def locate_repo_file(rel_path, suffix):
         return sibling, False
     tmp_fd, path = tempfile.mkstemp(prefix="er_jetson_flash.", suffix=suffix)
     os.close(tmp_fd)
-    # ?nocache= busts raw.githubusercontent's ~5-minute CDN cache (stale-revision guard)
-    nonce = "{}-{}".format(os.getpid(), int.from_bytes(os.urandom(4), "big"))
-    url = "{}/{}?nocache={}".format(RAW_URL_BASE, rel_path, nonce)
+    url = "{}/{}".format(raw_url_base(), rel_path)
     res = subprocess.run(["curl", "-fsSL", "--max-time", "30", url, "-o", path], check=False)
     if res.returncode != 0 or os.path.getsize(path) == 0:
         os.unlink(path)
