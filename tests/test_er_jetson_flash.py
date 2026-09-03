@@ -906,11 +906,33 @@ class ResolvePasswordTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ER_JETSON_PASSWORD": "from-env"}):
             self.assertEqual(ejf.resolve_password(post_flash_args()), "from-env")
 
-    def test_interactive_prompt_when_neither_and_stdin_is_a_tty(self):
+    def prompt_text(self, *argv):
+        out = io.StringIO()
         with env_without_password(), mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: True)), \
-                mock.patch.object(ejf.getpass, "getpass", return_value="typed") as prompt:
-            self.assertEqual(ejf.resolve_password(post_flash_args("--username", "qa")), "typed")
-        self.assertIn("qa", prompt.call_args[0][0])
+                mock.patch.object(ejf.getpass, "getpass", return_value="typed") as prompt, \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(ejf.resolve_password(ejf.build_parser().parse_args(list(argv))), "typed")
+        return out.getvalue() + prompt.call_args[0][0]
+
+    def test_flash_prompt_says_the_password_will_be_set_on_the_new_user(self):
+        text = self.prompt_text("flash", "--username", "qa")
+        self.assertIn("qa", text)
+        self.assertRegex(text, r"(?i)new user|will be set|to set")
+        self.assertIn("--username", text)
+        self.assertIn("ER_JETSON_PASSWORD", text)
+
+    def test_post_flash_prompt_asks_for_the_existing_login(self):
+        text = self.prompt_text("post-flash", "--username", "qa")
+        self.assertIn("qa", text)
+        self.assertRegex(text, r"(?i)existing|current|ssh")
+        self.assertIn(ejf.DEF_HOST, text)
+        self.assertIn("--username", text)
+
+    def test_eof_at_the_prompt_means_no_password(self):
+        with env_without_password(), mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: True)), \
+                mock.patch.object(ejf.getpass, "getpass", side_effect=EOFError), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertIsNone(ejf.resolve_password(post_flash_args()))
 
     def test_none_when_neither_and_no_tty(self):
         with env_without_password(), mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: False)), \
