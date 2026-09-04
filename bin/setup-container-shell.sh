@@ -13,7 +13,8 @@ set -euo pipefail
 
 : "${TARGET_HOME:=/root}"
 : "${ROSBASH_SEARCH_ROOT:=/opt/ros}"
-: "${HELPER_FUNCTIONS_URL:=https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/.helper_bash_functions}"
+: "${ER_BUILD_TOOLS_BRANCH:=main}"
+: "${HELPER_FUNCTIONS_URL:=https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${ER_BUILD_TOOLS_BRANCH}/.helper_bash_functions}"
 
 # rosbash filters completion candidates against the WHOLE path, so a workspace
 # under a dot directory (/cortex/.catkin_ws) excludes every candidate beneath it:

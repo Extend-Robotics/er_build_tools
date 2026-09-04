@@ -32,18 +32,22 @@ assert_contains() { # name haystack needle
 base_tmp="$(mktemp -d)"
 trap 'status=$?; rm -rf "$base_tmp"; exit $status' EXIT
 
-# curl stub: the real fetch would need network. Writes whatever `-o` names.
+# curl stub: the real fetch would need network. Writes whatever `-o` names and
+# records the URL it was asked for, so tests can assert on the resolved branch.
 fake_bin="${base_tmp}/bin"
 mkdir -p "$fake_bin"
 cat > "${fake_bin}/curl" <<'STUB'
 #!/bin/bash
 dest=""
+url=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) dest="$2"; shift 2 ;;
-    *) shift ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
   esac
 done
+[ -n "${CURL_URL_LOG:-}" ] && printf '%s\n' "$url" >> "$CURL_URL_LOG"
 printf 'FAKE_HELPER_FUNCTIONS\n' > "$dest"
 STUB
 chmod +x "${fake_bin}/curl"
@@ -79,6 +83,27 @@ assert_contains "no-ROS1 image skips patch" "$out" "skipping completion patch"
 TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" bash "$SCRIPT" >/dev/null
 assert_eq "bashrc source line not duplicated on rerun" 1 \
   "$(count_occurrences "${home_dir}/.bashrc" "source ${home_dir}/.helper_bash_functions")"
+
+# --- helper URL follows ER_BUILD_TOOLS_BRANCH ---
+export CURL_URL_LOG="${base_tmp}/urls.txt"
+: > "$CURL_URL_LOG"
+TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" bash "$SCRIPT" >/dev/null
+assert_contains "defaults to the main branch" "$(cat "$CURL_URL_LOG")" "/refs/heads/main/.helper_bash_functions"
+
+: > "$CURL_URL_LOG"
+TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" \
+  ER_BUILD_TOOLS_BRANCH="a-feature-branch" bash "$SCRIPT" >/dev/null
+assert_contains "branch override reaches the URL" "$(cat "$CURL_URL_LOG")" \
+  "/refs/heads/a-feature-branch/.helper_bash_functions"
+
+# an explicit URL still wins over the branch
+: > "$CURL_URL_LOG"
+TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" \
+  ER_BUILD_TOOLS_BRANCH="ignored" HELPER_FUNCTIONS_URL="https://example.invalid/helpers" \
+  bash "$SCRIPT" >/dev/null
+assert_eq "explicit HELPER_FUNCTIONS_URL wins" "https://example.invalid/helpers" \
+  "$(cat "$CURL_URL_LOG")"
+unset CURL_URL_LOG
 
 # --- rosbash patching ---
 ros_root="${base_tmp}/opt/ros"

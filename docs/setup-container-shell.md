@@ -6,9 +6,15 @@ not from a shell.
 
 ## Use it
 
-One line per Dockerfile, placed **after the last `apt`/`rosdep` step**:
+One call per Dockerfile, placed **after the last `apt`/`rosdep` step**:
 
-    RUN curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/setup-container-shell.sh | bash
+    ARG ER_BUILD_TOOLS_BRANCH="main"
+    ARG SETUP_CONTAINER_SHELL_URL="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${ER_BUILD_TOOLS_BRANCH}/bin/setup-container-shell.sh"
+    RUN curl -fsSL "${SETUP_CONTAINER_SHELL_URL}" | ER_BUILD_TOOLS_BRANCH="${ER_BUILD_TOOLS_BRANCH}" bash
+
+Passing the branch through to the script keeps the script and the
+`.helper_bash_functions` it fetches on the same branch, so
+`--build-arg ER_BUILD_TOOLS_BRANCH=my-branch` tests both together.
 
 Position matters: `rosdep install` can pull `ros-noetic-rosbash` back in, which
 would overwrite the completion patch applied earlier in the file.
@@ -56,7 +62,8 @@ Every rosbash under the search root is patched, so multi-distro images are cover
 |----------|---------|
 | `TARGET_HOME` | `/root` |
 | `ROSBASH_SEARCH_ROOT` | `/opt/ros` |
-| `HELPER_FUNCTIONS_URL` | `.../refs/heads/main/.helper_bash_functions` |
+| `ER_BUILD_TOOLS_BRANCH` | `main` |
+| `HELPER_FUNCTIONS_URL` | `.../refs/heads/${ER_BUILD_TOOLS_BRANCH}/.helper_bash_functions` |
 
 Overridden by the tests to run against fixtures; image builds use the defaults.
 
