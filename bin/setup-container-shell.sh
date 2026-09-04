@@ -81,6 +81,8 @@ main() {
   patch_rosbash_completion
 }
 
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+# Run unless sourced. Piped in (`curl ... | bash`) BASH_SOURCE is empty, which
+# set -u would make fatal, so default it to $0 - that is the executed case too.
+if [ "${BASH_SOURCE[0]:-$0}" = "${0}" ]; then
   main "$@"
 fi
