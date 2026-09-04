@@ -34,3 +34,9 @@ Below are links to further docs on specific tools, but there are pleanty more un
 - [jetson-flash-preflight](docs/jetson-flash-preflight.md) - GO / DO NOT FLASH pre-flash check for the AGX Orin 64GB eMMC patch (PCN210100): module detection over USB + flash-tree patch check (curl-bash).
 - [er_jetson_flash](docs/er-jetson-flash.md) - one-command AGX Orin QA-cortex flash: verify the JetPack 5.1.2 tree against a canonical manifest (rebuilt from the L4T R35.4.1 tarballs when broken — no SDK Manager, works on Ubuntu 20.04 and 22.04 hosts), preflight gate, flash to NVMe, then post-flash setup (clock, apt over the USB link when offline, nvidia-jetpack, sanity checks).
 - [urdf2usd](docs/urdf2usd.md) - URDF --> USD converter (temporarily depricated, see [here](https://github.com/Extend-Robotics/er_interface/pull/156) for more info)
+
+## image build scripts
+
+Scripts run by image builds rather than from an interactive shell.
+
+- [setup-container-shell](docs/setup-container-shell.md) - install the helper functions into an image and repair ROS1 tab completion under a dot-directory workspace (`/cortex/.catkin_ws`). Called once per Dockerfile in `cortex_docker`, after the last apt/rosdep step.
