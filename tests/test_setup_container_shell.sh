@@ -84,6 +84,17 @@ TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" bash "$SCRIPT" 
 assert_eq "bashrc source line not duplicated on rerun" 1 \
   "$(count_occurrences "${home_dir}/.bashrc" "source ${home_dir}/.helper_bash_functions")"
 
+# --- invocation modes ---
+# `curl ... | bash` is how the Dockerfiles call it, and piping leaves BASH_SOURCE
+# unset, which set -u turns fatal unless the run-unless-sourced guard defaults it.
+piped_out="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" \
+  bash < "$SCRIPT" 2>&1)"
+assert_contains "piped into bash runs main" "$piped_out" "Installed"
+assert_contains "piped into bash has no unbound variable" "$piped_out" "skipping completion patch"
+
+sourced_out="$(bash -c "source '$SCRIPT'" 2>&1)"
+assert_eq "sourcing produces no output and no side effects" "" "$sourced_out"
+
 # --- helper URL follows ER_BUILD_TOOLS_BRANCH ---
 export CURL_URL_LOG="${base_tmp}/urls.txt"
 : > "$CURL_URL_LOG"
