@@ -58,10 +58,10 @@ Every rosbash under the search root is patched, so multi-distro images are cover
 
 ## Elevation
 
-The completion patch rewrites files under `/opt/ros`. As root — every image
-build, and any cortex container — they are writable and nothing is elevated.
-On a dev host with ROS installed via apt they are root-owned, so **only the
-`sed` runs under sudo**, prompting at that point. The script itself is never
+The completion patch rewrites files under `/opt/ros`. Where they are writable —
+which is the case running as root, as image builds do — nothing is elevated.
+Where they are not, typically ROS installed via apt and a non-root user,
+**only the `sed` runs under sudo**, prompting at that point. The script itself is never
 run with sudo: doing so would leave a root-owned `.helper_bash_functions` in
 the user's home.
 

@@ -17,11 +17,10 @@ source ~/.bashrc
 
 Safe to re-run: it will not add a second `source` line if one is already there.
 
-It also repairs ROS1 tab completion if this machine has ROS installed directly
-on the host — rosbash otherwise offers no launch files for a workspace under a
-dot directory (`/cortex/.catkin_ws`). That rewrite touches root-owned files, so
-it asks for sudo at that point and nothing else runs elevated. Machines whose
-ROS lives only in a container have nothing to patch and are never prompted. See
+It also repairs ROS1 tab completion, without which rosbash offers no launch
+files for a workspace under a dot directory (`/cortex/.catkin_ws`). Where it
+finds no ROS it says so and skips that step; where the ROS files are root-owned
+it asks for sudo for that rewrite alone, and nothing else runs elevated. See
 [setup-container-shell](docs/setup-container-shell.md).
 
 ### Updating helper bash functions
