@@ -8,7 +8,7 @@ not from a shell.
 
 One line per Dockerfile, placed **after the last `apt`/`rosdep` step**:
 
-    RUN wget -qO- https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/setup-container-shell.sh | bash
+    RUN curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/setup-container-shell.sh | bash
 
 Position matters: `rosdep install` can pull `ros-noetic-rosbash` back in, which
 would overwrite the completion patch applied earlier in the file.

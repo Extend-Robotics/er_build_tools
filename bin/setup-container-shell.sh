@@ -5,7 +5,7 @@
 # Call once per Dockerfile, AFTER the last apt/rosdep step — a reinstalled
 # ros-noetic-rosbash would otherwise revert the completion patch:
 #
-#   RUN wget -qO- https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/setup-container-shell.sh | bash
+#   RUN curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/setup-container-shell.sh | bash
 #
 # Idempotent, and a no-op for the completion patch in images without ROS1.
 
@@ -33,7 +33,7 @@ install_helper_bash_functions() {
   local helper_path="${TARGET_HOME}/.helper_bash_functions"
   local bashrc="${TARGET_HOME}/.bashrc"
   local source_line="source ${helper_path}"
-  wget -qO "$helper_path" "$HELPER_FUNCTIONS_URL"
+  curl -fsSL -o "$helper_path" "$HELPER_FUNCTIONS_URL"
   grep -qxF "$source_line" "$bashrc" 2>/dev/null || echo "$source_line" >> "$bashrc"
   echo "Installed ${helper_path} and sourced it from ${bashrc}"
 }

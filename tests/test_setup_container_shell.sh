@@ -4,7 +4,7 @@
 # so sourcing it would run the whole suite at lint time; CI runs it explicitly via
 # check_setup_container_shell.yml instead.
 # Self-contained tests for bin/setup-container-shell.sh. No bats dependency, no
-# ROS install: rosbash fixtures are synthesised and wget is stubbed on PATH.
+# ROS install: rosbash fixtures are synthesised and curl is stubbed on PATH.
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="${here}/../bin/setup-container-shell.sh"
@@ -32,14 +32,21 @@ assert_contains() { # name haystack needle
 base_tmp="$(mktemp -d)"
 trap 'status=$?; rm -rf "$base_tmp"; exit $status' EXIT
 
-# wget stub: the real fetch would need network. Args are `-qO <dest> <url>`.
+# curl stub: the real fetch would need network. Writes whatever `-o` names.
 fake_bin="${base_tmp}/bin"
 mkdir -p "$fake_bin"
-cat > "${fake_bin}/wget" <<'STUB'
+cat > "${fake_bin}/curl" <<'STUB'
 #!/bin/bash
-printf 'FAKE_HELPER_FUNCTIONS\n' > "$2"
+dest=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) dest="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf 'FAKE_HELPER_FUNCTIONS\n' > "$dest"
 STUB
-chmod +x "${fake_bin}/wget"
+chmod +x "${fake_bin}/curl"
 export PATH="${fake_bin}:${PATH}"
 
 # A rosbash fixture carries the same 13 path filters as the real file: 9 of the
