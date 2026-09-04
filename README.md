@@ -11,9 +11,17 @@ This is already in all new arch containers, but if you want it on a host or your
 ### Initial setup
 To install these functions on your system, just run:
 ```bash
-wget -O ~/.helper_bash_functions https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/.helper_bash_functions
-echo "source ~/.helper_bash_functions" >> ~/.bashrc && source ~/.bashrc
+curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/setup-container-shell.sh | bash
+source ~/.bashrc
 ```
+
+Safe to re-run: it will not add a second `source` line if one is already there.
+
+It also repairs ROS1 tab completion, without which rosbash offers no launch
+files for a workspace under a dot directory (`/cortex/.catkin_ws`). Where it
+finds no ROS it says so and skips that step; where the ROS files are root-owned
+it asks for sudo for that rewrite alone, and nothing else runs elevated. See
+[setup-container-shell](docs/setup-container-shell.md).
 
 ### Updating helper bash functions
 
