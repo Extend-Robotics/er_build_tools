@@ -84,6 +84,26 @@ TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" bash "$SCRIPT" 
 assert_eq "bashrc source line not duplicated on rerun" 1 \
   "$(count_occurrences "${home_dir}/.bashrc" "source ${home_dir}/.helper_bash_functions")"
 
+# a machine set up from the old README already sources the tilde form
+tilde_home="${base_tmp}/tildehome"
+mkdir -p "$tilde_home"
+printf 'source ~/.helper_bash_functions\n' > "${tilde_home}/.bashrc"
+HOME="$tilde_home" TARGET_HOME="$tilde_home" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" \
+  bash "$SCRIPT" >/dev/null
+assert_eq "tilde form is not duplicated" 1 \
+  "$(count_occurrences "${tilde_home}/.bashrc" ".helper_bash_functions")"
+assert_eq "tilde form is left as written" 1 \
+  "$(count_occurrences "${tilde_home}/.bashrc" "source ~/.helper_bash_functions")"
+
+# ... but only when TARGET_HOME really is the running user's home
+other_home="${base_tmp}/otherhome"
+mkdir -p "$other_home"
+printf 'source ~/.helper_bash_functions\n' > "${other_home}/.bashrc"
+HOME="$tilde_home" TARGET_HOME="$other_home" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" \
+  bash "$SCRIPT" >/dev/null
+assert_eq "unrelated tilde line is not trusted" 2 \
+  "$(count_occurrences "${other_home}/.bashrc" ".helper_bash_functions")"
+
 # --- invocation modes ---
 # `curl ... | bash` is how the Dockerfiles call it, and piping leaves BASH_SOURCE
 # unset, which set -u turns fatal unless the run-unless-sourced guard defaults it.
@@ -141,6 +161,36 @@ make_rosbash "${multi_root}/melodic/share/rosbash/rosbash"
 TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="$multi_root" bash "$SCRIPT" >/dev/null
 assert_eq "second distro patched too" 13 \
   "$(count_occurrences "${multi_root}/melodic/share/rosbash/rosbash" "-not -name '.*'")"
+
+# --- elevation is scoped to the rewrite ---
+# require_sudo only needs builtins, so emptying PATH inside the shell isolates
+# the "no sudo" case (emptying it for the bash invocation would lose bash too).
+no_sudo_out="$(bash -c "PATH=''; source '$SCRIPT'; require_sudo /opt/ros/x" 2>&1)"
+assert_eq "no sudo exits 1" 1 "$?"
+assert_contains "no sudo says why" "$no_sudo_out" "sudo is not installed"
+
+writable_probe="${base_tmp}/writable/rosbash"
+mkdir -p "$(dirname "$writable_probe")"
+: > "$writable_probe"
+bash -c "source '$SCRIPT'; rosbash_is_writable '$writable_probe'"
+assert_eq "writable rosbash needs no elevation" 0 "$?"
+
+bash -c "source '$SCRIPT'; rosbash_is_writable '${base_tmp}/absent/rosbash'"
+assert_eq "unreachable rosbash is not writable" 1 "$?"
+
+# root ignores file permissions, so the read-only case can only be exercised
+# unprivileged - which is how CI runs.
+if [ "$(id -u)" -ne 0 ]; then
+  ro_file="${base_tmp}/readonly/rosbash"
+  mkdir -p "$(dirname "$ro_file")"
+  make_rosbash "$ro_file"
+  chmod 555 "$(dirname "$ro_file")"
+  bash -c "source '$SCRIPT'; rosbash_is_writable '$ro_file'"
+  assert_eq "root-owned rosbash needs elevation" 1 "$?"
+  chmod 755 "$(dirname "$ro_file")"
+else
+  printf '  (root: skipping the read-only rosbash assertion)\n'
+fi
 
 # --- fail fast on an unexpected rosbash ---
 short_root="${base_tmp}/short/opt/ros"

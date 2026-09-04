@@ -56,6 +56,19 @@ An absent rosbash is a legitimate state, so it is skipped; a rosbash whose shape
 is not what the patch expects fails the build rather than silently no-op'ing.
 Every rosbash under the search root is patched, so multi-distro images are covered.
 
+## Elevation
+
+The completion patch rewrites files under `/opt/ros`. As root — every image
+build, and any cortex container — they are writable and nothing is elevated.
+On a dev host with ROS installed via apt they are root-owned, so **only the
+`sed` runs under sudo**, prompting at that point. The script itself is never
+run with sudo: doing so would leave a root-owned `.helper_bash_functions` in
+the user's home.
+
+Without a usable sudo credential and no terminal to prompt on, sudo fails
+immediately and the script exits non-zero with the file untouched — it does not
+hang.
+
 ## Environment
 
 | Variable | Default |

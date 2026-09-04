@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-: "${TARGET_HOME:=/root}"
+: "${TARGET_HOME:=${HOME:-/root}}"
 : "${ROSBASH_SEARCH_ROOT:=/opt/ros}"
 : "${ER_BUILD_TOOLS_BRANCH:=main}"
 : "${HELPER_FUNCTIONS_URL:=https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${ER_BUILD_TOOLS_BRANCH}/.helper_bash_functions}"
@@ -30,13 +30,58 @@ count_path_filters() { # rosbash_file
   { grep -oE "${PATH_FILTER_DOTTED}|${PATH_FILTER_BARE}" "$1" || true; } | wc -l
 }
 
+# Machines set up from the README carry the tilde form of this line. It names
+# the same file whenever TARGET_HOME is the running user's home, so treat it as
+# already present rather than appending a second, absolute-path duplicate.
+bashrc_already_sources() { # bashrc source_line
+  local bashrc="$1" source_line="$2"
+  grep -qxF -- "$source_line" "$bashrc" 2>/dev/null && return 0
+  [ "$TARGET_HOME" = "${HOME:-}" ] || return 1
+  grep -qxF -- "source ~/.helper_bash_functions" "$bashrc" 2>/dev/null
+}
+
 install_helper_bash_functions() {
   local helper_path="${TARGET_HOME}/.helper_bash_functions"
   local bashrc="${TARGET_HOME}/.bashrc"
   local source_line="source ${helper_path}"
   curl -fsSL -o "$helper_path" "$HELPER_FUNCTIONS_URL"
-  grep -qxF "$source_line" "$bashrc" 2>/dev/null || echo "$source_line" >> "$bashrc"
+  bashrc_already_sources "$bashrc" "$source_line" || echo "$source_line" >> "$bashrc"
   echo "Installed ${helper_path} and sourced it from ${bashrc}"
+}
+
+# `sed -i` writes a temp file alongside the target, so the directory has to be
+# writable too. Root in a container always is; an apt-installed ROS on a dev
+# host is not, and there only the rewrite is elevated - never the whole script,
+# which would leave a root-owned .helper_bash_functions in the user's home.
+rosbash_is_writable() { # rosbash_file
+  [ -w "$1" ] && [ -w "$(dirname "$1")" ]
+}
+
+require_sudo() { # rosbash_file
+  local rosbash_file="$1"
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "ERROR: ${rosbash_file} needs root to patch, and sudo is not installed." >&2
+    exit 1
+  fi
+  if sudo -n true 2>/dev/null; then
+    return 0
+  fi
+  # No probe for whether sudo can prompt: /dev/tty is readable over ssh without
+  # a pty, so it says nothing useful. Announce the prompt and let sudo decide -
+  # it fails immediately, and audibly, where it cannot ask.
+  echo "${rosbash_file} is owned by root; sudo is needed for the rewrite only."
+}
+
+rosbash_sed() { # rosbash_file
+  local rosbash_file="$1"
+  local script="s|${PATH_FILTER_DOTTED}|${BASENAME_FILTER}|g"
+  script="${script}; s|${PATH_FILTER_BARE}|${BASENAME_FILTER}|g"
+  if rosbash_is_writable "$rosbash_file"; then
+    sed -i -E "$script" "$rosbash_file"
+    return 0
+  fi
+  require_sudo "$rosbash_file"
+  sudo sed -i -E "$script" "$rosbash_file"
 }
 
 patch_one_rosbash() { # rosbash_file
@@ -56,8 +101,7 @@ patch_one_rosbash() { # rosbash_file
     echo "       found ${filter_count}; rosbash has changed upstream." >&2
     exit 1
   fi
-  sed -i -E "s|${PATH_FILTER_DOTTED}|${BASENAME_FILTER}|g; s|${PATH_FILTER_BARE}|${BASENAME_FILTER}|g" \
-    "$rosbash_file"
+  rosbash_sed "$rosbash_file"
   echo "Patched ${filter_count} path filters in ${rosbash_file}"
 }
 
