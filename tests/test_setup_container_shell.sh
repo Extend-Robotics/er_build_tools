@@ -53,8 +53,9 @@ STUB
 chmod +x "${fake_bin}/curl"
 export PATH="${fake_bin}:${PATH}"
 
-# A rosbash fixture carries the same 13 path filters as the real file: 9 of the
-# dotted variant (5 alone, 4 alongside the bare variant used for plain files).
+# A rosbash fixture carries the same 14 path filters as the real file: 9 of the
+# dotted variant (5 alone, 4 alongside the bare variant used for plain files),
+# plus the unquoted one in _roscmd.
 make_rosbash() { # dest
   local dest="$1" i
   mkdir -p "$(dirname "$dest")"
@@ -65,6 +66,7 @@ make_rosbash() { # dest
   for i in 6 7 8 9; do
     echo "  opts=\$(find -L \$path -type d ! -regex \".*/[.][^./].*\" -print0)\$(find -L \$path -type f ! -regex \".*/[.][^.]*\" -print0) # ${i}" >> "$dest"
   done
+  echo "  exepath=(\$(find -L \$catkin_package_libexec_dir \$pkgdir -name \$2 -type f ! -regex .*/[.].* ! -regex .*\$pkgdir\/build\/.* | uniq))" >> "$dest"
 }
 
 count_occurrences() { # file pattern
@@ -78,7 +80,7 @@ out="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" bash "$S
 assert_eq "helper functions fetched" "FAKE_HELPER_FUNCTIONS" "$(cat "${home_dir}/.helper_bash_functions")"
 assert_eq "bashrc sources helpers once" 1 \
   "$(count_occurrences "${home_dir}/.bashrc" "source ${home_dir}/.helper_bash_functions")"
-assert_contains "no-ROS1 image skips patch" "$out" "skipping completion patch"
+assert_contains "no-ROS1 image skips patch" "$out" "skipping rosbash patch"
 
 TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" bash "$SCRIPT" >/dev/null
 assert_eq "bashrc source line not duplicated on rerun" 1 \
@@ -110,7 +112,7 @@ assert_eq "unrelated tilde line is not trusted" 2 \
 piped_out="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" \
   bash < "$SCRIPT" 2>&1)"
 assert_contains "piped into bash runs main" "$piped_out" "Installed"
-assert_contains "piped into bash has no unbound variable" "$piped_out" "skipping completion patch"
+assert_contains "piped into bash has no unbound variable" "$piped_out" "skipping rosbash patch"
 
 sourced_out="$(bash -c "source '$SCRIPT'" 2>&1)"
 assert_eq "sourcing produces no output and no side effects" "" "$sourced_out"
@@ -141,12 +143,14 @@ ros_root="${base_tmp}/opt/ros"
 rosbash_file="${ros_root}/noetic/share/rosbash/rosbash"
 make_rosbash "$rosbash_file"
 out="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="$ros_root" bash "$SCRIPT")"
-assert_contains "reports 13 filters patched" "$out" "Patched 13 path filters"
+assert_contains "reports 14 filters patched" "$out" "Patched 14 path filters"
 assert_eq "no dotted full-path filters remain" 0 \
   "$(count_occurrences "$rosbash_file" '! -regex ".*/[.][^./].*"')"
 assert_eq "no bare full-path filters remain" 0 \
   "$(count_occurrences "$rosbash_file" '! -regex ".*/[.][^.]*"')"
-assert_eq "basename filter applied 13 times" 13 \
+assert_eq "no _roscmd full-path filter remains" 0 \
+  "$(count_occurrences "$rosbash_file" '! -regex .*/[.].*')"
+assert_eq "basename filter applied 14 times" 14 \
   "$(count_occurrences "$rosbash_file" "-not -name '.*'")"
 
 before="$(cat "$rosbash_file")"
@@ -154,12 +158,22 @@ out="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="$ros_root" bash "$SCRIPT")"
 assert_contains "rerun reports already patched" "$out" "Already patched"
 assert_eq "rerun leaves file unchanged" "$before" "$(cat "$rosbash_file")"
 
+# --- a host patched before _roscmd was covered gets the remaining filter ---
+completion_only_root="${base_tmp}/completion_only/opt/ros"
+completion_only_file="${completion_only_root}/noetic/share/rosbash/rosbash"
+make_rosbash "$completion_only_file"
+sed -i "s|! -regex \"[^\"]*\"|-not -name '.*'|g" "$completion_only_file"
+out="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="$completion_only_root" bash "$SCRIPT")"
+assert_contains "completion-only patch gets the _roscmd filter" "$out" "Patched 1 path filters"
+assert_eq "completion-only patch ends fully patched" 14 \
+  "$(count_occurrences "$completion_only_file" "-not -name '.*'")"
+
 # --- every rosbash under the search root is patched ---
 multi_root="${base_tmp}/multi/opt/ros"
 make_rosbash "${multi_root}/noetic/share/rosbash/rosbash"
 make_rosbash "${multi_root}/melodic/share/rosbash/rosbash"
 TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="$multi_root" bash "$SCRIPT" >/dev/null
-assert_eq "second distro patched too" 13 \
+assert_eq "second distro patched too" 14 \
   "$(count_occurrences "${multi_root}/melodic/share/rosbash/rosbash" "-not -name '.*'")"
 
 # --- elevation is scoped to the rewrite ---
