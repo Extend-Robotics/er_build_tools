@@ -17,9 +17,9 @@ source ~/.bashrc
 
 Safe to re-run: it will not add a second `source` line if one is already there.
 
-It also repairs ROS1 tab completion and `roscat`/`rosed`/`roscp`, without which
-rosbash offers no launch files and reports "That file does not exist in that
-package." for a workspace under a dot directory (`/cortex/.catkin_ws`). Where it
+It also repairs rosbash for a workspace under a dot directory
+(`/cortex/.catkin_ws`). Without that, tab completion offers no launch files and
+`roscat`, `rosed` and friends cannot find files in the workspace. Where it
 finds no ROS it says so and skips that step; where the ROS files are root-owned
 it asks for sudo for that rewrite alone, and nothing else runs elevated. See
 [setup-container-shell](docs/setup-container-shell.md).
@@ -48,4 +48,4 @@ Below are links to further docs on specific tools, but there are pleanty more un
 
 Scripts run by image builds rather than from an interactive shell.
 
-- [setup-container-shell](docs/setup-container-shell.md) - install the helper functions into an image and repair ROS1 tab completion and `roscat`/`rosed`/`roscp` under a dot-directory workspace (`/cortex/.catkin_ws`). Called once per Dockerfile in `cortex_docker`, after the last apt/rosdep step.
+- [setup-container-shell](docs/setup-container-shell.md) - install the helper functions into an image and repair rosbash (tab completion, `roscat`, `rosed` and friends) under a dot-directory workspace (`/cortex/.catkin_ws`). Called once per Dockerfile in `cortex_docker`, after the last apt/rosdep step.
