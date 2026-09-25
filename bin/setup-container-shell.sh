@@ -1,13 +1,14 @@
 #!/bin/bash
 # setup-container-shell.sh — make the interactive shell inside a cortex image
-# usable: install the shared helper functions and repair ROS1 tab completion.
+# usable: install the shared helper functions and repair rosbash for a workspace
+# under a dot directory.
 #
 # Call once per Dockerfile, AFTER the last apt/rosdep step — a reinstalled
-# ros-noetic-rosbash would otherwise revert the completion patch:
+# ros-noetic-rosbash would otherwise revert the rosbash patch:
 #
 #   RUN curl -fsSL https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/main/bin/setup-container-shell.sh | bash
 #
-# Idempotent, and a no-op for the completion patch in images without ROS1.
+# Idempotent, and a no-op for the rosbash patch in images without ROS1.
 
 set -euo pipefail
 
@@ -16,18 +17,19 @@ set -euo pipefail
 : "${ER_BUILD_TOOLS_BRANCH:=main}"
 : "${HELPER_FUNCTIONS_URL:=https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/refs/heads/${ER_BUILD_TOOLS_BRANCH}/.helper_bash_functions}"
 
-# rosbash filters completion candidates against the WHOLE path, so a workspace
-# under a dot directory (/cortex/.catkin_ws) excludes every candidate beneath it:
-# `roslaunch <pkg> <TAB>` completes the package name, then offers no launch files.
-# A basename check keeps the original intent (hide dotfiles) without inspecting
-# ancestors. Both variants below match a dot-ancestor; ERE-escaped for sed -E.
-readonly PATH_FILTER_DOTTED='! -regex "\.\*/\[\.\]\[\^\./\]\.\*"'
-readonly PATH_FILTER_BARE='! -regex "\.\*/\[\.\]\[\^\.\]\*"'
+# rosbash's find filters match hidden paths against the WHOLE path, so a
+# workspace under a dot directory (/cortex/.catkin_ws) hides every file beneath
+# it; see docs/setup-container-shell.md. Patterns are ERE-escaped for sed -E and
+# written against ros-noetic-rosbash 1.15.10:
+# https://github.com/ros/ros/blob/1.15.10/tools/rosbash/rosbash
+readonly COMPLETION_PATH_FILTERS='! -regex "\.\*/\[\.\]\[\^\./\]\.\*"|! -regex "\.\*/\[\.\]\[\^\.\]\*"'
 readonly BASENAME_FILTER="-not -name '.*'"
-readonly EXPECTED_FILTER_COUNT=13
+readonly EXPECTED_COMPLETION_FILTER_COUNT=13
+readonly ROSCMD_PATH_FILTER='(-name [$]2 -type f) ! -regex \.\*/\[\.\]\.\* (! -regex \.\*[$]pkgdir\\/build\\/\.\*) \| uniq'
+readonly HIDDEN_DIRECTORY_PRUNE="-name '.*' -prune -o"
 
-count_path_filters() { # rosbash_file
-  { grep -oE "${PATH_FILTER_DOTTED}|${PATH_FILTER_BARE}" "$1" || true; } | wc -l
+count_matches() { # rosbash_file grep_mode pattern
+  { grep -o "$2" -- "$3" "$1" || [ $? -eq 1 ]; } | wc -l
 }
 
 # Machines set up from the README carry the tilde form of this line. It names
@@ -74,8 +76,8 @@ require_sudo() { # rosbash_file
 
 rosbash_sed() { # rosbash_file
   local rosbash_file="$1"
-  local script="s|${PATH_FILTER_DOTTED}|${BASENAME_FILTER}|g"
-  script="${script}; s|${PATH_FILTER_BARE}|${BASENAME_FILTER}|g"
+  local script="s#${COMPLETION_PATH_FILTERS}#${BASENAME_FILTER}#g"
+  script="${script}; s#${ROSCMD_PATH_FILTER}#${HIDDEN_DIRECTORY_PRUNE}"' \1 \2 -print | uniq#'
   if rosbash_is_writable "$rosbash_file"; then
     sed -i -E "$script" "$rosbash_file"
     return 0
@@ -85,33 +87,36 @@ rosbash_sed() { # rosbash_file
 }
 
 patch_one_rosbash() { # rosbash_file
-  local rosbash_file="$1" filter_count
-  filter_count="$(count_path_filters "$rosbash_file")"
-  if [ "$filter_count" -eq 0 ]; then
-    if grep -qF -- "$BASENAME_FILTER" "$rosbash_file"; then
-      echo "Already patched: ${rosbash_file}"
-      return 0
-    fi
-    echo "ERROR: ${rosbash_file} has neither the expected path filters nor the" >&2
-    echo "       basename replacement; rosbash has changed upstream." >&2
+  local rosbash_file="$1"
+  local unpatched_completion_count patched_completion_count unpatched_roscmd_count patched_roscmd_count
+  unpatched_completion_count="$(count_matches "$rosbash_file" -E "$COMPLETION_PATH_FILTERS")"
+  patched_completion_count="$(count_matches "$rosbash_file" -F "$BASENAME_FILTER")"
+  unpatched_roscmd_count="$(count_matches "$rosbash_file" -E "$ROSCMD_PATH_FILTER")"
+  patched_roscmd_count="$(count_matches "$rosbash_file" -F "$HIDDEN_DIRECTORY_PRUNE")"
+  if [ $((unpatched_completion_count + patched_completion_count)) -ne "$EXPECTED_COMPLETION_FILTER_COUNT" ] \
+    || [ $((unpatched_roscmd_count + patched_roscmd_count)) -ne 1 ]; then
+    echo "ERROR: unrecognised rosbash: ${rosbash_file}" >&2
+    echo "       completion filters: ${unpatched_completion_count} unpatched + ${patched_completion_count} patched, expected ${EXPECTED_COMPLETION_FILTER_COUNT}" >&2
+    echo "       _roscmd filter: ${unpatched_roscmd_count} unpatched + ${patched_roscmd_count} patched, expected 1" >&2
+    echo "       rosbash has changed upstream or was edited; reinstall ros-<distro>-rosbash and re-run." >&2
     exit 1
   fi
-  if [ "$filter_count" -ne "$EXPECTED_FILTER_COUNT" ]; then
-    echo "ERROR: expected ${EXPECTED_FILTER_COUNT} path filters in ${rosbash_file}," >&2
-    echo "       found ${filter_count}; rosbash has changed upstream." >&2
-    exit 1
+  local unpatched_count=$((unpatched_completion_count + unpatched_roscmd_count))
+  if [ "$unpatched_count" -eq 0 ]; then
+    echo "Already patched: ${rosbash_file}"
+    return 0
   fi
   rosbash_sed "$rosbash_file"
-  echo "Patched ${filter_count} path filters in ${rosbash_file}"
+  echo "Patched ${rosbash_file}; path filters rewritten: ${unpatched_count}"
 }
 
-patch_rosbash_completion() {
+patch_rosbash_path_filters() {
   local rosbash_files=()
   if [ -d "$ROSBASH_SEARCH_ROOT" ]; then
     mapfile -t rosbash_files < <(find "$ROSBASH_SEARCH_ROOT" -path '*/share/rosbash/rosbash' -type f)
   fi
   if [ "${#rosbash_files[@]}" -eq 0 ]; then
-    echo "No rosbash under ${ROSBASH_SEARCH_ROOT}; skipping completion patch (no ROS1 in this image)"
+    echo "No rosbash under ${ROSBASH_SEARCH_ROOT}; skipping rosbash patch (no ROS1 in this image)"
     return 0
   fi
   local rosbash_file
@@ -122,7 +127,7 @@ patch_rosbash_completion() {
 
 main() {
   install_helper_bash_functions
-  patch_rosbash_completion
+  patch_rosbash_path_filters
 }
 
 # Run unless sourced. Piped in (`curl ... | bash`) BASH_SOURCE is empty, which

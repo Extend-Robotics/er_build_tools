@@ -53,8 +53,8 @@ STUB
 chmod +x "${fake_bin}/curl"
 export PATH="${fake_bin}:${PATH}"
 
-# A rosbash fixture carries the same 13 path filters as the real file: 9 of the
-# dotted variant (5 alone, 4 alongside the bare variant used for plain files).
+# The same path filters as the real Noetic rosbash: 9 dotted and 4 bare ones in
+# completion (5 lines with one, 4 with both), and 1 unquoted one in _roscmd.
 make_rosbash() { # dest
   local dest="$1" i
   mkdir -p "$(dirname "$dest")"
@@ -65,10 +65,21 @@ make_rosbash() { # dest
   for i in 6 7 8 9; do
     echo "  opts=\$(find -L \$path -type d ! -regex \".*/[.][^./].*\" -print0)\$(find -L \$path -type f ! -regex \".*/[.][^.]*\" -print0) # ${i}" >> "$dest"
   done
+  echo "  exepath=(\$(find -L \$catkin_package_libexec_dir \$pkgdir -name \$2 -type f ! -regex .*/[.].* ! -regex .*\$pkgdir\/build\/.* | uniq))" >> "$dest"
 }
 
 count_occurrences() { # file pattern
   { grep -oF -- "$2" "$1" || true; } | wc -l
+}
+
+assert_rejected() { # name rosbash_file expected_error
+  local rosbash_before error_output
+  rosbash_before="$(cat "$2")"
+  error_output="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${2%/share/rosbash/rosbash}" \
+    bash "$SCRIPT" 2>&1 >/dev/null)"
+  assert_eq "$1 exits 1" 1 "$?"
+  assert_contains "$1 reports the counts" "$error_output" "$3"
+  assert_eq "$1 leaves the file untouched" "$rosbash_before" "$(cat "$2")"
 }
 
 # --- helper bash functions install ---
@@ -78,7 +89,7 @@ out="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" bash "$S
 assert_eq "helper functions fetched" "FAKE_HELPER_FUNCTIONS" "$(cat "${home_dir}/.helper_bash_functions")"
 assert_eq "bashrc sources helpers once" 1 \
   "$(count_occurrences "${home_dir}/.bashrc" "source ${home_dir}/.helper_bash_functions")"
-assert_contains "no-ROS1 image skips patch" "$out" "skipping completion patch"
+assert_contains "no-ROS1 image skips patch" "$out" "skipping rosbash patch"
 
 TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" bash "$SCRIPT" >/dev/null
 assert_eq "bashrc source line not duplicated on rerun" 1 \
@@ -110,7 +121,7 @@ assert_eq "unrelated tilde line is not trusted" 2 \
 piped_out="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="${base_tmp}/no_ros" \
   bash < "$SCRIPT" 2>&1)"
 assert_contains "piped into bash runs main" "$piped_out" "Installed"
-assert_contains "piped into bash has no unbound variable" "$piped_out" "skipping completion patch"
+assert_contains "piped into bash has no unbound variable" "$piped_out" "skipping rosbash patch"
 
 sourced_out="$(bash -c "source '$SCRIPT'" 2>&1)"
 assert_eq "sourcing produces no output and no side effects" "" "$sourced_out"
@@ -141,26 +152,47 @@ ros_root="${base_tmp}/opt/ros"
 rosbash_file="${ros_root}/noetic/share/rosbash/rosbash"
 make_rosbash "$rosbash_file"
 out="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="$ros_root" bash "$SCRIPT")"
-assert_contains "reports 13 filters patched" "$out" "Patched 13 path filters"
+assert_contains "reports 14 filters patched" "$out" "path filters rewritten: 14"
 assert_eq "no dotted full-path filters remain" 0 \
   "$(count_occurrences "$rosbash_file" '! -regex ".*/[.][^./].*"')"
 assert_eq "no bare full-path filters remain" 0 \
   "$(count_occurrences "$rosbash_file" '! -regex ".*/[.][^.]*"')"
-assert_eq "basename filter applied 13 times" 13 \
+assert_eq "basename filter applied to completion 13 times" 13 \
   "$(count_occurrences "$rosbash_file" "-not -name '.*'")"
+assert_contains "_roscmd prunes hidden directories and keeps its build filter" "$(cat "$rosbash_file")" \
+  "exepath=(\$(find -L \$catkin_package_libexec_dir \$pkgdir -name '.*' -prune -o -name \$2 -type f ! -regex .*\$pkgdir\/build\/.* -print | uniq))"
+
+package_dir="${base_tmp}/.catkin_ws/src/demo_pkg"
+mkdir -p "${package_dir}/launch" "${package_dir}/build" "${package_dir}/.claude/worktrees/wt/launch"
+touch "${package_dir}/launch/demo.launch" "${package_dir}/build/demo.launch" \
+  "${package_dir}/.claude/worktrees/wt/launch/demo.launch"
+resolved="$(pkgdir="$package_dir" catkin_package_libexec_dir="" \
+  bash -c "set -- demo_pkg demo.launch; $(grep 'exepath=' "$rosbash_file"); printf '%s' \"\${exepath[*]}\"")"
+assert_eq "_roscmd finds the one file under a dot directory" "${package_dir}/launch/demo.launch" "$resolved"
 
 before="$(cat "$rosbash_file")"
 out="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="$ros_root" bash "$SCRIPT")"
 assert_contains "rerun reports already patched" "$out" "Already patched"
 assert_eq "rerun leaves file unchanged" "$before" "$(cat "$rosbash_file")"
 
+# --- a host patched before _roscmd was covered gets the remaining filter ---
+completion_only_root="${base_tmp}/completion_only/opt/ros"
+completion_only_file="${completion_only_root}/noetic/share/rosbash/rosbash"
+make_rosbash "$completion_only_file"
+quoted_path_filter='! -regex "[^"]*"'
+sed -i "s|${quoted_path_filter}|-not -name '.*'|g" "$completion_only_file"
+out="$(TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="$completion_only_root" bash "$SCRIPT")"
+assert_contains "completion-only patch rewrites the _roscmd filter" "$out" "path filters rewritten: 1"
+assert_eq "completion-only patch ends the same as a fresh patch" "$(cat "$rosbash_file")" \
+  "$(cat "$completion_only_file")"
+
 # --- every rosbash under the search root is patched ---
 multi_root="${base_tmp}/multi/opt/ros"
 make_rosbash "${multi_root}/noetic/share/rosbash/rosbash"
 make_rosbash "${multi_root}/melodic/share/rosbash/rosbash"
 TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="$multi_root" bash "$SCRIPT" >/dev/null
-assert_eq "second distro patched too" 13 \
-  "$(count_occurrences "${multi_root}/melodic/share/rosbash/rosbash" "-not -name '.*'")"
+assert_eq "second distro patched too" "$(cat "$rosbash_file")" \
+  "$(cat "${multi_root}/melodic/share/rosbash/rosbash")"
 
 # --- elevation is scoped to the rewrite ---
 # require_sudo only needs builtins, so emptying PATH inside the shell isolates
@@ -193,19 +225,31 @@ else
 fi
 
 # --- fail fast on an unexpected rosbash ---
-short_root="${base_tmp}/short/opt/ros"
-short_file="${short_root}/noetic/share/rosbash/rosbash"
+short_file="${base_tmp}/short/opt/ros/noetic/share/rosbash/rosbash"
 make_rosbash "$short_file"
 sed -i '2d' "$short_file"
-TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="$short_root" bash "$SCRIPT" >/dev/null 2>&1
-assert_eq "wrong filter count exits 1" 1 "$?"
+assert_rejected "missing completion filter" "$short_file" "completion filters: 12 unpatched + 0 patched"
 
-alien_root="${base_tmp}/alien/opt/ros"
-alien_file="${alien_root}/noetic/share/rosbash/rosbash"
+patched_short_file="${base_tmp}/patched_short/opt/ros/noetic/share/rosbash/rosbash"
+mkdir -p "$(dirname "$patched_short_file")"
+sed '2d' "$rosbash_file" > "$patched_short_file"
+assert_rejected "patched rosbash missing a filter" "$patched_short_file" \
+  "completion filters: 0 unpatched + 12 patched"
+
+extra_basename_file="${base_tmp}/extra_basename/opt/ros/noetic/share/rosbash/rosbash"
+make_rosbash "$extra_basename_file"
+echo "  find . -not -name '.*'" >> "$extra_basename_file"
+assert_rejected "extra basename filter" "$extra_basename_file" "completion filters: 13 unpatched + 1 patched"
+
+no_roscmd_file="${base_tmp}/no_roscmd/opt/ros/noetic/share/rosbash/rosbash"
+make_rosbash "$no_roscmd_file"
+sed -i '$d' "$no_roscmd_file"
+assert_rejected "missing _roscmd filter" "$no_roscmd_file" "_roscmd filter: 0 unpatched + 0 patched"
+
+alien_file="${base_tmp}/alien/opt/ros/noetic/share/rosbash/rosbash"
 mkdir -p "$(dirname "$alien_file")"
 echo 'nothing recognisable here' > "$alien_file"
-TARGET_HOME="$home_dir" ROSBASH_SEARCH_ROOT="$alien_root" bash "$SCRIPT" >/dev/null 2>&1
-assert_eq "unrecognisable rosbash exits 1" 1 "$?"
+assert_rejected "unrecognisable rosbash" "$alien_file" "completion filters: 0 unpatched + 0 patched"
 
 printf '\n%d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]

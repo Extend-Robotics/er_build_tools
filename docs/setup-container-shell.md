@@ -1,8 +1,8 @@
 # setup-container-shell
 
-Prepares the interactive shell inside a cortex image: installs the shared
-`.helper_bash_functions` and repairs ROS1 tab completion. Run by the image build,
-not from a shell.
+Prepares the interactive shell: installs the shared `.helper_bash_functions`
+and repairs rosbash for a workspace under a dot directory. Run by image builds,
+and by hand on dev hosts (see the [README](../README.md#initial-setup)).
 
 ## Use it
 
@@ -17,7 +17,7 @@ Passing the branch through to the script keeps the script and the
 `--build-arg ER_BUILD_TOOLS_BRANCH=my-branch` tests both together.
 
 Position matters: `rosdep install` can pull `ros-noetic-rosbash` back in, which
-would overwrite the completion patch applied earlier in the file.
+would overwrite the rosbash patch applied earlier in the file.
 
 ## What it does
 
@@ -36,21 +36,41 @@ so every candidate beneath it is excluded. The symptom is partial completion:
     roslaunch wuji_control_ros wuji_<TAB> # offers nothing
 
 The package name still completes because that stage uses the package index; only
-the second stage walks the filesystem. `rosmsg`, `rossrv`, `rosrun` and `rosed`
-are hit the same way.
+the second stage walks the filesystem. Completion for `rosrun`, `roscat`, `rosed`,
+`roscp`, `rosmsg` and `rossrv` is hit the same way.
 
-The fix replaces all 13 occurrences (two variants) with a basename check,
-`-not -name '.*'`, which keeps the original intent — hide dotfiles — without
-inspecting ancestor directories.
+**roscat, rosed, roscp and rosmv.** These look the file up through rosbash's
+`_roscmd`, which carries an unquoted variant of the same filter:
+
+    ! -regex .*/[.].*
+
+so even with completion repaired, the command cannot find the file:
+
+    roscat wuji_control_ros wuji_driver.launch  # That file does not exist in that package.
+
+`rosrun` and `roslaunch` find files without this filter; only their completion
+is affected.
+
+**The fix.** The 13 completion filters become a basename check,
+`-not -name '.*'`, which hides dotfiles without inspecting ancestor directories.
+`_roscmd` picks the file that is printed, edited, copied or moved, so there the
+filter becomes a prune instead, which also skips hidden directories inside the
+package (`.git/`, `.pytest_cache/`, `.claude/worktrees/`) as upstream intended:
+
+    find ... -name '.*' -prune -o -name $2 -type f ... -print
+
+Completion can still list names from hidden directories inside a package. Only
+bash's `rosbash` is patched; `rosfish`, `roszsh` and `rostcsh` are not.
 
 ## Behaviour
 
 | Situation | Result |
 |-----------|--------|
-| rosbash found, 13 filters | Patched |
+| rosbash found, unpatched | Patched |
+| rosbash patched by an earlier version (completion filters only) | `_roscmd` filter patched |
 | rosbash found, already patched | No-op |
 | No rosbash under `$ROSBASH_SEARCH_ROOT` | Skipped (image has no ROS1) |
-| rosbash found, filter count is not 13 | **Exit 1** — rosbash changed upstream |
+| rosbash found, filters do not add up to 13 completion + 1 `_roscmd` | **Exit 1**, file untouched: rosbash changed upstream or was edited |
 
 An absent rosbash is a legitimate state, so it is skipped; a rosbash whose shape
 is not what the patch expects fails the build rather than silently no-op'ing.
@@ -58,7 +78,7 @@ Every rosbash under the search root is patched, so multi-distro images are cover
 
 ## Elevation
 
-The completion patch rewrites files under `/opt/ros`. Where they are writable —
+The rosbash patch rewrites files under `/opt/ros`. Where they are writable —
 which is the case running as root, as image builds do — nothing is elevated.
 Where they are not, typically ROS installed via apt and a non-root user,
 **only the `sed` runs under sudo**, prompting at that point. The script itself is never
