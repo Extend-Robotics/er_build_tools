@@ -14,14 +14,15 @@ env:
 
 jobs:
   flake8:
-    runs-on: ubuntu-latest
+    # Python 3.8 has no build for ubuntu-26.04 (ubuntu-latest): https://github.com/actions/python-versions/blob/main/versions-manifest.json
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.8"]
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
@@ -73,14 +74,15 @@ jobs:
         fi
 
   pylint:
-    runs-on: ubuntu-latest
+    # Python 3.8 has no build for ubuntu-26.04 (ubuntu-latest): https://github.com/actions/python-versions/blob/main/versions-manifest.json
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.8"]
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
@@ -132,14 +134,15 @@ jobs:
         fi
 
   ruff:
-    runs-on: ubuntu-latest
+    # Python 3.8 has no build for ubuntu-26.04 (ubuntu-latest): https://github.com/actions/python-versions/blob/main/versions-manifest.json
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.8"]
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
