@@ -23,7 +23,7 @@ RAW_URL_BASE="https://raw.githubusercontent.com/Extend-Robotics/er_build_tools/r
 PAYLOAD_REL_PATH="bin/update_source_repos.py"
 PAYLOAD_TMP=""
 CONTAINER_TMP=""
-# shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
+# shellcheck disable=SC2317,SC2329  # invoked indirectly via the EXIT trap
 cleanup() {
     rm -f "$PAYLOAD_TMP"
     if [ -n "$CONTAINER_TMP" ]; then
