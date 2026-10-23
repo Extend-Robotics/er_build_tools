@@ -4,7 +4,7 @@ on: [push]
 
 jobs:
   check_update_source_repos:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: checkout repo
         uses: actions/checkout@v4
