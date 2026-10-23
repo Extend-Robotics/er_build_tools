@@ -4,7 +4,7 @@ on: [push]
 
 jobs:
   check_setup_container_shell:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: checkout repo
         uses: actions/checkout@v4

@@ -4,7 +4,7 @@ on: [push]
 
 jobs:
   check_jetson_flash_preflight:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: checkout repo
         uses: actions/checkout@v4
